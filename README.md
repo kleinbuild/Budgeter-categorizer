@@ -1,4 +1,6 @@
-# Budgeter
+# Budgeter-categorizer
+
+NOTE: This is a fork of the original project, `Budgeter`.
 
 A monthly budget planner that keeps your data on your own computer. No account, no sync, no ads.
 
@@ -17,12 +19,26 @@ Download this repo (**Code → Download ZIP**), unzip it, and open `app/index.ht
 Your data is saved in that browser on that computer. Use the same browser each time, and don't clear its site data. The AI features aren't available in the browser version.
 
 ### 2. Mac app
-Built and tested on Apple Silicon Macs; Intel Macs should work too. In Terminal:
+Built and tested on Apple Silicon Macs; Intel Macs should work too. 
+
+For this fork:
+
+In Terminal:
+```
+git clone https://github.com/kleinbuild/Budgeter-categorizer.git
+cd Budgeter
+bash install.sh
+```
+
+For the Original app:
+
+In Terminal:
 ```
 git clone https://github.com/ReckingBallResearch/Budgeter.git
 cd Budgeter
 bash install.sh
 ```
+
 It installs Node.js if you don't have it (you'll be asked for your Mac password), builds the app, puts it in /Applications and opens it. The first build takes a few minutes. To update later, run `git pull` and then `bash install.sh` again. Your data is kept.
 
 The app is built and signed on your own Mac, so macOS doesn't show the "unidentified developer" warning.
