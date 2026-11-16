@@ -3,3 +3,8 @@ dist/
 .DS_Store
 budgeter-backup-*.json
 monthly-planner-backup-*.json
+
+# Per-machine settings. Only the template is committed.
+.env
+.env.*
+!.env.example

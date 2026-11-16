@@ -18,5 +18,12 @@ This folder is the source of truth. Edit `app/index.html` here, then ship it to 
 - Desktop dev: `npm start`. Install or update the Mac app: `bash install.sh` (builds with electron-builder and copies to /Applications).
 - Web: republish `app/index.html` to the artifact URL above, without changing its capabilities.
 
+## Machines
+This project is developed on more than one computer (Windows, macOS, Linux).
+- Committed files use paths relative to the repo root. They never name a machine's folders, user, or installed tool versions.
+- Each machine's own settings are in `.env` at the repo root, which is not committed. `.env.example` lists the keys. If `.env` is missing, copy `.env.example` to `.env` and fill it in for that machine.
+- Don't assume an operating system or shell: read `DEV_OS` in `.env`. Find tool versions and Ollama models by running the tools (`node -v`, `rustc --version`, `ollama list`), not from notes.
+- `.gitattributes` keeps line endings consistent across machines. Don't convert them by hand.
+
 ## History
 Monthly planner (https://claude.ai/artifact/92K1s89g3tRGJrnNWMTiHD) is the v1 ancestor. The first git commit is the old desktop build of it.
