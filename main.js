@@ -8,9 +8,10 @@ let win;
 
 // Only https links are handed to the system. Anything else (http, file, custom protocols) is dropped.
 function openIfHttps(url) {
-  let protocol;
-  try { protocol = new URL(url).protocol; } catch (err) { return; }
-  if (protocol === 'https:') shell.openExternal(url);
+  let parsed;
+  try { parsed = new URL(url); } catch (err) { return; }
+  // hand over the parsed form, so the system browser gets exactly what was checked
+  if (parsed.protocol === 'https:') shell.openExternal(parsed.href);
 }
 function createWindow() {
   win = new BrowserWindow({
