@@ -1,0 +1,35 @@
+{
+ "app": "budgeter",
+ "version": 2,
+ "exported": "2026-11-16T18:04:11.512Z",
+ "plan": {
+  "v": 2,
+  "income": [],
+  "bills": [
+   {"id": "bil01ab", "name": "Rent", "amt": 1850, "freq": "monthly", "date": "2026-11-01", "acct": "chk\" onfocus=\"alert('acct')\" autofocus=\"", "cat": "Housing", "variable": true}
+  ],
+  "accounts": [
+   {"id": "x\" onmouseover=\"alert(document.domain)\" data-x=\"", "name": "Checking", "type": "checking", "bal": 100},
+   {"id": "crd01ab", "name": "Visa", "type": "credit", "bal": 50, "dueDay": 14, "duedate": "2026-11-14\"><img src=x onerror=alert('duedate')>", "stmt": 50, "payfrom": "chk01ab"}
+  ],
+  "goals": [],
+  "cats": [{"name": "Housing", "budget": 0}],
+  "rules": "",
+  "done": {},
+  "actual": {"out:bil01ab:2026-11-01": "<svg onload=alert('actual')>"},
+  "applied": {"in:div-inv01ab:2026-11-15": {"f": "__proto__", "v": 1}},
+  "payOn": {"out:c-crd01ab:2026-11-14": "2026-11-12\"><img src=x onerror=alert('payOn')>"},
+  "nw": {},
+  "merch": {"__proto__": {"desc": "x", "cat": "Groceries"}},
+  "__proto__": {"locked": true},
+  "kickoff": "<script>alert('kickoff')</script>",
+  "settings": {"nested": ["objects are not allowed here"]}
+ },
+ "tx": {
+  "2026-11": {
+   "items": [
+    {"id": "tx101ab\"><script>alert('id')</script>", "date": "2026-11-02", "desc": "<img src=x onerror=alert('desc')>", "amt": -5, "cat": "Groceries", "acct": "chk01ab", "ai": {"toString": "alert"}}
+   ]
+  }
+ }
+}

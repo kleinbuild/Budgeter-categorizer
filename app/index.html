@@ -192,6 +192,7 @@ dialog::backdrop{background:rgba(10,15,20,.55)}
     <button class="tab" role="tab" data-tab="trends">Trends</button>
     <button class="tab" role="tab" data-tab="goals">Goals</button>
   </div>
+  <div id="warn" hidden></div>
   <main id="main"><div class="empty" style="margin-top:24px">Loading your budget…</div></main>
   <div class="foot"><button class="btn sm" data-act="kickoff">Redo kickoff</button><button class="btn sm" data-act="backup">Download backup</button><button class="btn sm" data-act="restore">Restore from backup</button><input type="file" id="rf" accept=".json,application/json" hidden><span class="muted" id="savenote">Changes save automatically to this device.</span></div>
 </div>
@@ -219,6 +220,8 @@ const TYPES=[['checking','Checking'],['savings','Savings'],['cash','Cash'],['inv
 const DEFAULT_CATS=['Housing','Utilities','Groceries','Take Out','Dining & Bars','Transport','Insurance','Subscriptions','Health','Shopping','Entertainment','Travel','Savings','Other'];
 const RESERVED=['Bill payment','Transfer','Income','Uncategorized'];
 const NOSPEND=['Bill payment','Transfer','Income'];
+/* Which Budgeter this is. Written into every backup as "appVersion". Keep it the same as "version" in package.json. */
+const APP_VERSION='2.4.0';
 const blank=()=>({v:2,income:[],bills:[],accounts:[],goals:[],cats:DEFAULT_CATS.map(name=>({name,budget:0})),rules:'',done:{},actual:{},applied:{},showPlanned:false,interestIn:false,kickoff:'',kickDone:false,nw:{},merch:{},extra:0,strategy:'avalanche'});
 
 let plan=null,tx={},view={y:now.getFullYear(),m:now.getMonth()},tab='overview',fq='',fcat='',ftag='';
@@ -253,16 +256,45 @@ const KICK=()=>plan.kickoff||'';
 const START=()=>KICK()>TODAY?KICK():TODAY;
 
 /* ---------- storage: a copy on this device and a copy in your account ---------- */
-const S={db:null,uid:null,locked:false};
-const lget=k=>{try{const v=localStorage.getItem('budgeter:'+k);return v?JSON.parse(v):null}catch(e){return null}};
+/* S.bad holds saved data that is there but can't be read, by storage key: {raw, why}. While it has anything in it,
+   or S.locked is set, nothing is saved, so the unreadable data is never overwritten. */
+const S={db:null,uid:null,locked:false,bad:{}};
+const isObj=v=>!!v&&typeof v==='object'&&!Array.isArray(v);
+/* Reading from this device has three outcomes that must not be mixed up:
+   missing (nothing saved yet), ok, or bad (something is saved but it isn't valid JSON).
+   Treating "bad" as "missing" is how a blank plan used to get saved over real data. */
+function lread(k){
+  let raw=null;
+  try{raw=localStorage.getItem('budgeter:'+k)}catch(e){return{state:'missing'}}
+  if(raw==null||raw==='')return{state:'missing'};
+  try{return{state:'ok',raw,value:JSON.parse(raw)}}
+  catch(e){return{state:'bad',raw,why:'it is not valid JSON (the text is cut off or damaged)'}}
+}
+/* for small preferences only (open tab, chosen model), where falling back to the default is harmless */
+const lget=k=>{const r=lread(k);return r.state==='ok'?r.value:null};
+/* Is this the outline of a saved plan or month? Returns '' when it is, or what is wrong.
+   This is deliberately loose: it only checks what the app needs in order to start without crashing.
+   The strict check of every value is checkBackup(), used when a backup file is restored. */
+function shapeProblem(k,o){
+  if(!isObj(o))return k==='plan'?'it is not a plan':'it is not a month of spending';
+  if(k!=='plan')return Array.isArray(o.items)&&o.items.every(isObj)?'':'its "items" is not a list of transactions';
+  for(const f of ['income','bills','accounts','goals','cats'])if(o[f]!==undefined&&!(Array.isArray(o[f])&&o[f].every(isObj)))return`its "${f}" is not a list`;
+  for(const f of ['done','actual','applied','payOn','nw','merch'])if(o[f]!==undefined&&!isObj(o[f]))return`its "${f}" is not a set of values`;
+  if(o.rules!==undefined&&typeof o.rules!=='string')return'its "rules" is not text';
+  return'';
+}
 const lset=(k,o)=>{try{localStorage.setItem('budgeter:'+k,JSON.stringify(o));return true}catch(e){return false}};
 const cpath=k=>`data/users/${S.uid}/${k}`;
 const pend={},timers={},chain={};
 function status(t,c){const e=$('#st');e.textContent=t;e.className='st '+(c||'')}
 const okMsg=()=>S.db?'Saved to account and device':'Saved on this device';
 async function sRead(k){
-  const l=lget(k);let c=null;
-  if(S.db){const s=await S.db.doc(cpath(k)).get();c=s.exists?clone(s.data()):null}
+  const r=lread(k);
+  if(r.state==='ok'){const why=shapeProblem(k,r.value);if(why){r.state='bad';r.why=why}}
+  /* unreadable: remember the raw text, and throw so the caller locks saving instead of starting blank */
+  if(r.state==='bad'){S.bad[k]={raw:r.raw,why:r.why};throw{code:'unreadable'}}
+  const l=r.state==='ok'?r.value:null;let c=null;
+  if(S.db){const s=await S.db.doc(cpath(k)).get();c=s.exists?clone(s.data()):null;if(c&&shapeProblem(k,c))throw{code:'unreadable_account'}}
   if(l&&(!c||(l._ts||0)>(c._ts||0))){if(S.db){pend[k]=l;timers[k]=setTimeout(()=>flushKey(k),400)}return l}
   return c;
 }
@@ -273,8 +305,9 @@ function flushKey(k){
   });
 }
 const flushAll=()=>Object.keys(pend).forEach(flushKey);
+const saveBlocked=()=>S.locked||Object.keys(S.bad).length>0;
 function persist(k,get){
-  if(S.locked)return;
+  if(saveBlocked()){status('Not saved: see the note above','bad');return}
   const o=clone(get());o._ts=Date.now();
   const ok=lset(k,o);
   if(!S.db){status(ok?okMsg():'Could not save',ok?'':'bad');return}
@@ -315,19 +348,178 @@ function upgrade(p){
   });
   return ch;
 }
+/* The backup's "check" block: for each month, how many transactions it has and what they add up to in whole cents.
+   Whoever reads the backup (this app on restore, or the new desktop app's importer) recomputes these and compares,
+   which catches a file that was cut off, damaged or edited.
+   The rule for cents: each amount is rounded to the nearest cent on its own, halves away from zero, then they are added.
+   The rounding works on the amount's digits as written in the backup file (JavaScript's shortest form of the number,
+   the same text JSON.stringify writes), not on amt*100: in floating point 3.335*100 is 333.4999…, which would round
+   down, while the file says 3.335, which rounds to 334. Any reader that parses the file's text gets the same cents. */
+function toCents(amt){
+  if(!Number.isFinite(amt))return 0;
+  const text=String(Math.abs(amt));
+  const sign=amt<0?-1:1;
+  /* very large or very tiny numbers print as 1e21 or 1e-7; no real amount looks like that, so plain rounding is fine */
+  if(text.includes('e'))return sign*Math.round(Math.abs(amt)*100);
+  const [whole,fraction='']=text.split('.');
+  const digits=(fraction+'000').slice(0,3);
+  let cents=Number(whole)*100+Number(digits.slice(0,2));
+  if(digits[2]>='5')cents+=1;
+  return sign*cents||0;
+}
+const monthCheck=items=>({count:items.length,cents:items.reduce((total,t)=>total+toCents(+t.amt||0),0)});
 async function backup(){
-  const months=await allMonths(),t={};
-  for(const m of months){await ensureTx(m);t[m]={items:tx[m].items}}
-  const data=JSON.stringify({app:'budgeter',version:2,exported:new Date().toISOString(),plan,tx:t},null,1);
+  const months=await allMonths(),t={},check={};
+  for(const m of months){await ensureTx(m);t[m]={items:tx[m].items};check[m]=monthCheck(tx[m].items)}
+  /* "version" is the format of the file and stays 2, so older copies of Budgeter can still read it.
+     "appVersion" says which Budgeter wrote it. */
+  const data=JSON.stringify({app:'budgeter',version:2,appVersion:APP_VERSION,exported:new Date().toISOString(),plan,tx:t,check},null,1);
   try{await saveFile(`budgeter-backup-${TODAY}.json`,data,'application/json');toast(`Backup ready: plan and ${months.length} months of spending`)}catch(e){toast('Backup was not saved')}
+}
+
+/* ---------- checking a backup before it is restored ----------
+   A backup file comes from outside the app, so nothing in it is trusted. Before anything is saved or shown,
+   checkBackup() walks the whole file and returns a list of problems (empty when the file is fine).
+   One problem is enough to refuse the whole file: a half-restored budget is worse than none.
+   It checks shape, not meaning: ids look like ids, dates like dates, numbers are finite numbers,
+   lists are lists, and no value is something that could later be run as code or crash a screen. */
+const ID_RE=/^[A-Za-z0-9_-]{1,64}$/;
+const MONTH_RE=/^\d{4}-(0[1-9]|1[0-2])$/;
+/* keys of the per-occurrence maps (done, actual, applied, payOn): kind, item id, date */
+const OCC_KEY_RE=/^(in|out|save):[A-Za-z0-9_-]{1,70}:\d{4}-(0[1-9]|1[0-2])-(0[1-9]|[12]\d|3[01])$/;
+/* a YYYY-MM-DD date that exists on the calendar (no November 31st) */
+function isIsoDate(v){
+  if(typeof v!=='string'||!/^\d{4}-(0[1-9]|1[0-2])-(0[1-9]|[12]\d|3[01])$/.test(v))return false;
+  const [y,m,d]=v.split('-').map(Number);
+  return new Date(Date.UTC(y,m-1,d)).getUTCDate()===d;
+}
+const isFiniteNum=v=>typeof v==='number'&&Number.isFinite(v);
+const isEmpty=v=>v==null||v==='';
+/* older saves sometimes hold a number as text ("12.5"), so that is allowed where a number is optional */
+const isNumOrEmpty=v=>isEmpty(v)||isFiniteNum(v)||(typeof v==='string'&&/^-?\d+(\.\d+)?$/.test(v));
+/* what each field name must hold, wherever it appears in a record */
+const DATE_FIELDS=new Set(['date','end','divDate','cdate','upd','duedate','ytdOn','pdate','lend','dt']);
+const ID_FIELDS=new Set(['acct','to','payfrom','cfrom','lfrom']);
+const NUM_FIELDS=new Set(['amt','day2','dom','issue','bal','cash','divAmt','contrib','match','cday2','ret','ytd','apy','intday','limit','dueDay','due','stmt','typ','apr','min','lead','target','saved','budget','updAt','at']);
+const FREQ_FIELDS=new Set(['freq','cfreq','divFreq']);
+const MAX_TEXT=5000,MAX_PROBLEMS=5;
+function fieldProblem(key,v){
+  if(key==='__proto__')return'is not an allowed name';
+  if(key==='id')return typeof v==='string'&&ID_RE.test(v)?'':'is not a valid id';
+  if(ID_FIELDS.has(key))return isEmpty(v)||(typeof v==='string'&&ID_RE.test(v))?'':'is not a valid id';
+  if(DATE_FIELDS.has(key))return isEmpty(v)||isIsoDate(v)?'':'is not a date';
+  if(NUM_FIELDS.has(key))return isNumOrEmpty(v)?'':'is not a number';
+  if(FREQ_FIELDS.has(key))return isEmpty(v)||FREQS.some(f=>f[0]===v)?'':'is not a schedule this app knows';
+  if(v==null||typeof v==='boolean'||isFiniteNum(v))return'';
+  if(typeof v==='string')return v.length<=MAX_TEXT?'':'is too long';
+  return'must be text, a number or yes/no';
+}
+function checkBackup(b){
+  const problems=[];
+  const bad=msg=>{if(problems.length<MAX_PROBLEMS)problems.push(msg)};
+  /* every field of one record, by the rules above */
+  const fields=(rec,where)=>Object.keys(rec).forEach(key=>{const p=fieldProblem(key,rec[key]);if(p)bad(`${where}: "${key}" ${p}`)});
+  /* a list of records that each need an id of their own (and a name, for everything but transactions) */
+  const records=(list,where,needsName)=>{
+    if(!Array.isArray(list)){bad(`${where} is not a list`);return[]}
+    const seen=new Set();
+    list.forEach((rec,i)=>{
+      const at=`${where} ${i+1}`;
+      if(!isObj(rec)){bad(`${at} is not a record`);return}
+      fields(rec,at);
+      if(typeof rec.id!=='string')bad(`${at} has no id`);
+      else if(seen.has(rec.id))bad(`${at} repeats the id of another one`);
+      else seen.add(rec.id);
+      if(needsName&&typeof rec.name!=='string')bad(`${at} has no name`);
+    });
+    return list;
+  };
+  /* a map: every key must pass keyOk and every value must pass valueOk */
+  const map=(o,where,keyOk,valueOk)=>{
+    if(o===undefined)return;
+    if(!isObj(o)){bad(`${where} is not a set of values`);return}
+    Object.keys(o).forEach(k=>{if(k==='__proto__'||!keyOk(k))bad(`${where}: "${k.slice(0,40)}" is not a valid name`);else if(!valueOk(o[k]))bad(`${where}: the value for "${k.slice(0,40)}" is not valid`)});
+  };
+  const shortText=v=>typeof v==='string'&&v.length<=MAX_TEXT;
+
+  if(!isObj(b)||(b.app!=='budgeter'&&b.app!=='monthly-planner')||!isObj(b.plan))return['it is not a Budgeter or Monthly planner backup'];
+  if(b.version!==undefined&&!(isFiniteNum(b.version)&&b.version<=2))return['it was made by a newer version of Budgeter than this one'];
+  if(b.exported!==undefined&&!shortText(b.exported))bad('"exported" is not a date');
+  if(b.appVersion!==undefined&&!shortText(b.appVersion))bad('"appVersion" is not text');
+  Object.keys(b).forEach(k=>{if(k==='__proto__')bad('the file has a name that is not allowed')});
+
+  const p=b.plan;
+  ['income','bills','accounts'].forEach(k=>{if(!Array.isArray(p[k]))bad(`the plan has no list of ${k}`)});
+  if(problems.length)return problems;
+  records(p.income,'income source',true);
+  records(p.bills,'bill',true);
+  records(p.accounts,'account',true).forEach((a,i)=>{if(isObj(a)&&!TYPES.some(t=>t[0]===a.type))bad(`account ${i+1}: "type" is not an account type this app knows`)});
+  if(p.goals!==undefined)records(p.goals,'goal',true);
+  if(p.cats!==undefined){
+    if(!Array.isArray(p.cats))bad('the plan\'s categories are not a list');
+    else p.cats.forEach((c,i)=>{
+      if(!isObj(c)){bad(`category ${i+1} is not a record`);return}
+      fields(c,`category ${i+1}`);
+      if(typeof c.name!=='string'||!c.name.trim()||c.name.length>200)bad(`category ${i+1} has no name`);
+    });
+  }
+  map(p.done,'done',k=>OCC_KEY_RE.test(k),v=>v===1||v===true);
+  map(p.actual,'recorded amounts',k=>OCC_KEY_RE.test(k),isFiniteNum);
+  map(p.applied,'applied dividends',k=>OCC_KEY_RE.test(k),v=>isObj(v)&&(v.f==='bal'||v.f==='cash')&&isFiniteNum(v.v)&&Object.keys(v).length===2);
+  map(p.payOn,'pay dates',k=>OCC_KEY_RE.test(k),isIsoDate);
+  map(p.nw,'net worth history',k=>MONTH_RE.test(k),v=>isObj(v)&&isFiniteNum(v.a)&&isFiniteNum(v.d)&&(isEmpty(v.dt)||isIsoDate(v.dt))&&Object.keys(v).every(x=>['a','d','dt'].includes(x)));
+  map(p.merch,'remembered merchants',k=>k.length<=MAX_TEXT,v=>isObj(v)&&shortText(v.desc)&&shortText(v.cat)&&(isEmpty(v.tag)||shortText(v.tag))&&(isEmpty(v.acct)||(typeof v.acct==='string'&&ID_RE.test(v.acct)))&&Object.keys(v).every(x=>['desc','cat','tag','acct'].includes(x)));
+  if(p.rules!==undefined&&!(typeof p.rules==='string'&&p.rules.length<=200000))bad('the category rules are not text');
+  if(!isEmpty(p.kickoff)&&!isIsoDate(p.kickoff))bad('the kickoff day is not a date');
+  if(!isNumOrEmpty(p.extra))bad('the extra debt payment is not a number');
+  /* anything else at the top of the plan (settings, and fields this version doesn't know) must be a plain value */
+  const known=['income','bills','accounts','goals','cats','done','actual','applied','payOn','nw','merch','rules','kickoff','extra'];
+  Object.keys(p).forEach(k=>{if(known.includes(k))return;const v=p[k];if(k==='__proto__'||!(v==null||typeof v==='boolean'||isFiniteNum(v)||shortText(v)))bad(`the plan's "${k.slice(0,40)}" is not a plain value`)});
+
+  if(b.tx!==undefined&&!isObj(b.tx))bad('the spending is not grouped by month');
+  const months=isObj(b.tx)?Object.keys(b.tx):[];
+  months.forEach(m=>{
+    if(!MONTH_RE.test(m)){bad(`"${m.slice(0,40)}" is not a month`);return}
+    if(!isObj(b.tx[m])){bad(`spending for ${m} is not a month of transactions`);return}
+    records(b.tx[m].items,`transaction in ${m}`,false).forEach((t,i)=>{
+      if(!isObj(t))return;
+      const at=`transaction in ${m} ${i+1}`;
+      /* transactions are added up everywhere, so here the amount must be a real number and the date a real date */
+      if(!isFiniteNum(t.amt))bad(`${at}: "amt" is not a number`);
+      if(!isIsoDate(t.date))bad(`${at}: "date" is not a date`);
+      if(typeof t.desc!=='string')bad(`${at} has no description`);
+      if(typeof t.cat!=='string')bad(`${at} has no category`);
+    });
+  });
+  /* the file's own totals, when it has them (backups from 2.4.0 on) */
+  if(b.check!==undefined&&!problems.length){
+    if(!isObj(b.check))bad('its "check" section is not valid');
+    else{
+      const cm=Object.keys(b.check);
+      if(cm.length!==months.length||cm.some(m=>!months.includes(m)))bad('its "check" section lists different months from its spending');
+      else cm.forEach(m=>{
+        const want=b.check[m],got=monthCheck(b.tx[m].items);
+        if(!isObj(want)||want.count!==got.count||want.cents!==got.cents)bad(`spending for ${m} does not match the file's own check (the file may be damaged or edited; if you edited it on purpose, delete its "check" section)`);
+      });
+    }
+  }
+  return problems;
+}
+/* a message that stays up until it is closed, for things too long or too important for a toast */
+function tell(title,lines){
+  const d=$('#dlg');
+  d.innerHTML=`<h3>${esc(title)}</h3>${lines.map(l=>`<p>${esc(l)}</p>`).join('')}<div class="acts"><button class="btn pri" data-close>Close</button></div>`;
+  d.onkeydown=null;d.oninput=d.onchange=null;
+  d.querySelector('[data-close]').onclick=()=>d.close();
+  d.showModal();
 }
 function restore(file){
   const r=new FileReader();
   r.onload=()=>{
     let b;try{b=JSON.parse(String(r.result))}catch(e){toast('That file is not a valid backup');return}
-    const ok=b&&(b.app==='budgeter'||b.app==='monthly-planner')&&b.plan&&['income','bills','accounts'].every(k=>Array.isArray(b.plan[k]));
-    if(!ok){toast('That file is not a Budgeter or Monthly planner backup');return}
-    const ms=Object.keys(b.tx||{}).filter(m=>/^\d{4}-\d{2}$/.test(m)&&b.tx[m]&&Array.isArray(b.tx[m].items));
+    const problems=checkBackup(b);
+    if(problems.length){tell('This backup was not restored',['Nothing was changed. The file has '+(problems.length>=MAX_PROBLEMS?'several problems, starting with':problems.length>1?'these problems':'this problem')+':',...problems]);return}
+    const ms=Object.keys(b.tx||{});
     ask(`Restore your plan and ${ms.length} months of spending from this backup${b.exported?' ('+b.exported.slice(0,10)+')':''}?`,'Restore',()=>{
       plan=Object.assign(blank(),b.plan);plan.payOn=plan.payOn||{};upgrade(plan);savePlan();
       ms.forEach(m=>{tx[m]={items:b.tx[m].items};saveTx(m)});
@@ -338,7 +530,37 @@ function restore(file){
 }
 async function ensureTx(m){
   if(tx[m])return;
-  try{tx[m]=(await sRead('tx-'+m))||{items:[]}}catch(e){S.locked=true;tx[m]={items:[]};status('Load failed: reload before editing','bad')}
+  try{tx[m]=(await sRead('tx-'+m))||{items:[]}}catch(e){S.locked=true;tx[m]={items:[]};status('Load failed: reload before editing','bad');showBad()}
+}
+/* The note shown while saved data can't be read. It stays until the unreadable data is removed (a copy is saved first). */
+function showBad(){
+  const w=$('#warn'),keys=Object.keys(S.bad);
+  if(!w)return;
+  if(!keys.length){
+    w.hidden=!S.locked;
+    if(S.locked)w.innerHTML='<div class="alert late" role="alert"><b>Your saved data could not be loaded</b><div>Nothing you change now will be saved, so that what is stored stays as it is. Check your connection and reload the page.</div></div>';
+    return;
+  }
+  const names=keys.map(k=>k==='plan'?'your plan':'spending for '+k.slice(3));
+  w.hidden=false;
+  w.innerHTML=`<div class="alert late" role="alert"><b>Some saved data on this device can’t be read</b>
+  <div>${esc(names.join(', '))}: ${esc(S.bad[keys[0]].why)}. Budgeter has stopped saving, so the unreadable data is not overwritten. What shows below is empty or incomplete, and changes you make now are not kept.</div>
+  <div class="row" style="margin:10px 0 0"><button class="btn sm" data-act="badsave">Save a copy of the unreadable data</button><button class="btn sm" data-act="badclear">Remove it from this device</button></div>
+  <p class="muted" style="font-size:13px;margin:8px 0 0">Removing it saves a copy to a file first, then reloads. After that, Restore from backup brings back your last backup.</p></div>`;
+}
+/* the unreadable data exactly as it was stored, so it can be repaired by hand or sent to someone who can */
+async function saveBad(){
+  const keys={};Object.entries(S.bad).forEach(([k,v])=>{keys[k]=v.raw});
+  await saveFile(`budgeter-unreadable-${TODAY}.json`,JSON.stringify({app:'budgeter',unreadable:true,saved:new Date().toISOString(),keys},null,1),'application/json');
+}
+function clearBad(){
+  ask('Remove the unreadable data from this device? A copy is saved to a file first.','Save a copy and remove it',async()=>{
+    try{await saveBad()}catch(e){toast('The copy could not be saved, so nothing was removed');return}
+    Object.keys(S.bad).forEach(k=>{try{localStorage.removeItem('budgeter:'+k)}catch(e){}});
+    toast('Removed. Reloading…');
+    /* give the browser a moment to finish writing the copy before the page goes away */
+    setTimeout(()=>location.reload(),1500);
+  });
 }
 function toast(t){const e=document.createElement('div');e.className='toast';e.setAttribute('role','status');e.textContent=t;document.body.appendChild(e);setTimeout(()=>e.remove(),2600)}
 
@@ -823,7 +1045,7 @@ const DESK=window.budgeterDesktop||null;
 const AI_NAME=DESK?'The local AI':'Claude';
 /* the model is your choice among those installed in Ollama; gemma3:4b is the default the README tells you to pull */
 const DEFAULT_MODEL='gemma3:4b';
-let LOCAL_MODEL=lget('model')||DEFAULT_MODEL;
+let LOCAL_MODEL=(m=>typeof m==='string'&&m?m:DEFAULT_MODEL)(lget('model'));
 const API_TYPES=['image/jpeg','image/png','image/webp','image/gif'];
 async function forApi(b){
   let bm;try{bm=await createImageBitmap(b)}catch(e){throw{code:'image_rejected'}}
@@ -865,8 +1087,8 @@ const setModel=m=>{LOCAL_MODEL=m;lset('model',m)};
 /* a picker for the models installed in Ollama. Screenshots need one that reads images (gemma3, gemma4, qwen3-vl and the like) */
 const modelPick=c=>c?.models?.length&&(c.models.length>1||!c.s)?`<label class="small muted" style="display:inline-flex;gap:6px;align-items:center">Model <select id="aimodel" style="width:auto;padding:2px 6px">${(c.models.includes(LOCAL_MODEL)?[]:['<option selected disabled>choose…</option>']).concat(c.models.map(m=>`<option${m===LOCAL_MODEL?' selected':''}>${esc(m)}</option>`)).join('')}</select></label>`:'';
 /* what to show when the Mac app's local AI isn't ready */
-const aiSetup=c=>c?.why==='off'?`Optional: reading PDFs and screenshots, and asking about your spending, use a free AI that runs on this Mac. To turn it on, install <a href="https://ollama.com" target="_blank" rel="noopener">Ollama</a>, run <code>ollama pull ${LOCAL_MODEL}</code> in Terminal, and keep the Ollama app open. Everything else works without it. If you already have Ollama, open it and check again.`
-  :`Ollama is running but doesn't have ${LOCAL_MODEL} yet. In Terminal, run <code>ollama pull ${LOCAL_MODEL}</code>, then check again.`;
+const aiSetup=c=>c?.why==='off'?`Optional: reading PDFs and screenshots, and asking about your spending, use a free AI that runs on this Mac. To turn it on, install <a href="https://ollama.com" target="_blank" rel="noopener">Ollama</a>, run <code>ollama pull ${esc(LOCAL_MODEL)}</code> in Terminal, and keep the Ollama app open. Everything else works without it. If you already have Ollama, open it and check again.`
+  :`Ollama is running but doesn't have ${esc(LOCAL_MODEL)} yet. In Terminal, run <code>ollama pull ${esc(LOCAL_MODEL)}</code>, then check again.`;
 /* Claude sees each image at about 1.2 megapixels, so tall phone screenshots go as overlapping pieces to keep small text readable */
 async function shotPieces(files,lim){
   const out=[];let cut=false;
@@ -1166,8 +1388,8 @@ async function tipIcs(sel){
   const text=['BEGIN:VCALENDAR','VERSION:2.0','PRODID:-//Budgeter//EN','CALSCALE:GREGORIAN',...ev,'END:VCALENDAR'].join('\r\n')+'\r\n';
   try{await saveFile(sel.length===1?'transfer-reminder.ics':'transfer-reminders.ics',text,'text/calendar');toast('Reminder file ready. Open it to add it to your calendar.')}catch(e){toast('Reminder was not saved')}
 }
-const payCell=e=>`<input class="mid" type="date" value="${e.date}" data-act="payon" data-key="${esc(e.key)}" aria-label="Pay date for ${esc(e.name)}"><div class="since ${e.date>e.due?'neg':''}">${e.date>e.due?'after the due date, ':''}due ${dl(e.due)}</div>`;
-const amtCell=e=>e.variable?`${e.t==='out'?'−':'+'} <input class="mini" type="number" step="any" min="0" value="${e.hasActual?e.amt:''}" placeholder="${Math.round(e.est)}" data-act="${e.bill?'due':'actual'}" data-key="${esc(e.key)}" aria-label="${e.bill?'Amount due':'Actual amount'} for ${esc(e.name)}"><div class="muted" style="font-size:12px">${e.hasActual?(e.bill?(plan.done[e.key]?'paid':'billed'):'actual'):e.guess?'estimate from charges':'estimate'}</div>`:`${e.t==='out'?'−':'+'}${f2(e.amt)}`;
+const payCell=e=>`<input class="mid" type="date" value="${esc(e.date)}" data-act="payon" data-key="${esc(e.key)}" aria-label="Pay date for ${esc(e.name)}"><div class="since ${e.date>e.due?'neg':''}">${e.date>e.due?'after the due date, ':''}due ${dl(e.due)}</div>`;
+const amtCell=e=>e.variable?`${e.t==='out'?'−':'+'} <input class="mini" type="number" step="any" min="0" value="${e.hasActual?esc(e.amt):''}" placeholder="${Math.round(e.est)}" data-act="${e.bill?'due':'actual'}" data-key="${esc(e.key)}" aria-label="${e.bill?'Amount due':'Actual amount'} for ${esc(e.name)}"><div class="muted" style="font-size:12px">${e.hasActual?(e.bill?(plan.done[e.key]?'paid':'billed'):'actual'):e.guess?'estimate from charges':'estimate'}</div>`:`${e.t==='out'?'−':'+'}${f2(e.amt)}`;
 
 /* ---------- kickoff ---------- */
 function kickBanner(){
@@ -1180,9 +1402,9 @@ function vKick(){
     const s=sinceKick(a),est=r2((+a.bal||0)+s.d);
     return`<tr><td><b>${esc(a.name)}</b><div class="since">${s.items.length?s.items.map(x=>`${esc(x.e.name)} ${x.x>0?'+':'−'}${f2(Math.abs(x.x))} (${dl(x.e.date)})`).join('<br>'):'Nothing scheduled since'}</div></td>
     <td class="num" data-l="Last recorded">${f2(+a.bal||0)}<div class="since">${a.upd?'as of '+dl(a.upd):''}</div></td>
-    <td class="num" data-l="Estimate now">${s.items.length?`<button class="lnk" data-act="kest" data-id="${a.id}" data-v="${est}">${f2(est)}</button>`:'—'}</td>
-    <td class="num" data-l="Starting balance"><input class="mini" type="number" step="any" value="${+a.bal||0}" data-kb="${a.id}" aria-label="Starting balance of ${esc(a.name)}">${a.type==='investment'?`<div class="since" style="margin-top:4px">buying power</div><input class="mini" type="number" step="any" value="${r2((+a.cash||0)+s.dc)}" data-kc="${a.id}" aria-label="Buying power of ${esc(a.name)}">`:''}</td>
-    ${extra?`<td class="num" data-l="Next statement"><input class="mini" type="number" step="any" min="0" value="${a.duedate&&a.duedate>=k&&+a.stmt?+a.stmt:''}" placeholder="0" data-ks="${a.id}" aria-label="Next statement balance of ${esc(a.name)}"></td><td data-l="Due day (fixed)"><input class="mini" style="width:70px" type="number" min="1" max="31" step="1" value="${+a.dueDay||''}" placeholder="day" data-kdd="${a.id}" aria-label="Due day of ${esc(a.name)}"><div class="since">${+a.dueDay?'next due '+dl(nextDue(a,k)):''}</div></td><td data-l="Pay on">${(()=>{const due=nextDue(a,k),key=`out:c-${a.id}:${due}`,def=due?addDays(due,-(+a.lead||0)):'';return`<input class="mid" type="date" value="${esc(plan.payOn?.[key]||def)}" data-kp="${a.id}" data-def="${esc(def)}" aria-label="Pay date for ${esc(a.name)}">`})()}</td>`:''}<td></td></tr>`}).join(''):'';
+    <td class="num" data-l="Estimate now">${s.items.length?`<button class="lnk" data-act="kest" data-id="${esc(a.id)}" data-v="${est}">${f2(est)}</button>`:'—'}</td>
+    <td class="num" data-l="Starting balance"><input class="mini" type="number" step="any" value="${+a.bal||0}" data-kb="${esc(a.id)}" aria-label="Starting balance of ${esc(a.name)}">${a.type==='investment'?`<div class="since" style="margin-top:4px">buying power</div><input class="mini" type="number" step="any" value="${r2((+a.cash||0)+s.dc)}" data-kc="${esc(a.id)}" aria-label="Buying power of ${esc(a.name)}">`:''}</td>
+    ${extra?`<td class="num" data-l="Next statement"><input class="mini" type="number" step="any" min="0" value="${a.duedate&&a.duedate>=k&&+a.stmt?+a.stmt:''}" placeholder="0" data-ks="${esc(a.id)}" aria-label="Next statement balance of ${esc(a.name)}"></td><td data-l="Due day (fixed)"><input class="mini" style="width:70px" type="number" min="1" max="31" step="1" value="${+a.dueDay||''}" placeholder="day" data-kdd="${esc(a.id)}" aria-label="Due day of ${esc(a.name)}"><div class="since">${+a.dueDay?'next due '+dl(nextDue(a,k)):''}</div></td><td data-l="Pay on">${(()=>{const due=nextDue(a,k),key=`out:c-${a.id}:${due}`,def=due?addDays(due,-(+a.lead||0)):'';return`<input class="mid" type="date" value="${esc(plan.payOn?.[key]||def)}" data-kp="${esc(a.id)}" data-def="${esc(def)}" aria-label="Pay date for ${esc(a.name)}">`})()}</td>`:''}<td></td></tr>`}).join(''):'';
   const A=plan.accounts,cash=A.filter(a=>['checking','savings','cash'].includes(a.type)),inv=A.filter(a=>['investment','retirement','hsa','property'].includes(a.type)),cards=A.filter(a=>a.type==='credit'),loans=A.filter(a=>a.type==='loan');
   const head=x=>`<thead><tr><th>Account and what's scheduled since the last update</th><th class="num">Last recorded</th><th class="num">Estimate now</th><th class="num">Starting balance</th>${x?'<th class="num">Next statement</th><th>Due day</th><th>Pay on</th>':''}<th></th></tr></thead>`;
   return`<div class="sec"><h2>Kickoff: set your starting point</h2>
@@ -1196,14 +1418,14 @@ function vKick(){
 }
 function kickGo(){
   const k=$('#kdate').value;if(!k){toast('Pick a kickoff day');return}
-  const miss=[...document.querySelectorAll('[data-ks]')].filter(el=>parseFloat(el.value)>0&&!(+document.querySelector(`[data-kdd="${el.dataset.ks}"]`).value)).map(el=>acctName(el.dataset.ks));
+  const miss=[...document.querySelectorAll('[data-ks]')].filter(el=>parseFloat(el.value)>0&&!(+document.querySelector(`[data-kdd="${CSS.escape(el.dataset.ks)}"]`).value)).map(el=>acctName(el.dataset.ks));
   if(miss.length){toast(`Add a due day for ${miss.join(', ')}`);return}
   plan.kickoff=k;
   document.querySelectorAll('[data-kb]').forEach(el=>{const a=acct(el.dataset.kb);if(a&&el.value!==''){a.bal=r2(parseFloat(el.value)||0);a.upd=k;delete a.updAt}});
   document.querySelectorAll('[data-kc]').forEach(el=>{const a=acct(el.dataset.kc);if(a&&el.value!=='')a.cash=r2(parseFloat(el.value)||0)});
   document.querySelectorAll('[data-ks]').forEach(el=>{const a=acct(el.dataset.ks);if(a)a.stmt=Math.max(0,r2(parseFloat(el.value)||0))});
   document.querySelectorAll('[data-kdd]').forEach(el=>{const a=acct(el.dataset.kdd);if(!a)return;const d=Math.round(+el.value);if(d>=1&&d<=31){a.dueDay=d;a.duedate=nextDue(a,k)}
-    const p=document.querySelector(`[data-kp="${a.id}"]`),due=a.duedate,key=`out:c-${a.id}:${due}`,def=due?addDays(due,-(+a.lead||0)):'';
+    const p=document.querySelector(`[data-kp="${esc(a.id)}"]`),due=a.duedate,key=`out:c-${a.id}:${due}`,def=due?addDays(due,-(+a.lead||0)):'';
     if(p&&due){if(p.value&&p.value!==p.dataset.def&&p.value!==def)plan.payOn=Object.assign(plan.payOn||{},{[key]:p.value});else if(plan.payOn)delete plan.payOn[key]}});
   plan.kickDone=true;snapNW(k.slice(0,7),k);savePlan();
   view={y:+k.slice(0,4),m:+k.slice(5,7)-1};tab='overview';render();toast(`Kickoff set for ${dl(k)}`);
@@ -1237,7 +1459,7 @@ function vOverview(){
   <div class="left"><span class="muted">Logged so far</span><b>${f0(L.total)}</b><span class="muted">Left to spend</span><b class="${left<0?'neg':'pos'}">${f0(left)}</b>${daysLeft>0?`<span class="muted">About <b style="font-size:17px">${f0(Math.max(0,left)/daysLeft)}</b> a day for ${daysLeft} days</span>`:''}</div>
   <div class="note">${list.some(e=>e.passive)?`<label class="chk"><input type="checkbox" data-act="intin"${plan.interestIn?' checked':''}> Count interest and dividends as income</label>`:''}${plan.bills.some(b=>b.planned)?`<label class="chk"><input type="checkbox" data-act="planned"${plan.showPlanned?' checked':''}> Include planned bills</label>`:''}
     ${cardsOut?`<span>Card payments this month total ${f0(cardsOut)}. They pay off earlier charges, so they're on the calendar but not counted above.</span>`:''}${planned?`<span>Planned bills would add ${f0(planned)}.</span>`:''}${intr&&!plan.interestIn?`<span>${f0(intr)} of interest and dividends expected, not counted.</span>`:''}${estIn?`<span>${f0(estIn)} of income is an estimate. Enter the real amount below once it lands.</span>`:''}${contribTot?`<span>${f0(contribTot)} goes into retirement this month, including employer money.</span>`:''}${hsaIn?`<span>${f0(hsaIn)} goes into your HSA this month, including employer money.</span>`:''}${hsaOut||hsaBills?`<span>${f0(hsaOut+hsaBills)} paid from your HSA this month isn't counted above, since it comes out of the HSA.</span>`:''}</div>
-  ${stale.length?`<div class="alert"><b>New statement?</b>${stale.map(a=>`<div class="tip"><span>${esc(a.name)} was due ${dl(a.duedate)}. Enter the next statement, due ${dl(nextDue(a,addDays(a.duedate,1)))}.</span><button class="btn sm" data-act="nextstmt" data-id="${a.id}">New statement</button></div>`).join('')}</div>`:''}
+  ${stale.length?`<div class="alert"><b>New statement?</b>${stale.map(a=>`<div class="tip"><span>${esc(a.name)} was due ${dl(a.duedate)}. Enter the next statement, due ${dl(nextDue(a,addDays(a.duedate,1)))}.</span><button class="btn sm" data-act="nextstmt" data-id="${esc(a.id)}">New statement</button></div>`).join('')}</div>`:''}
   ${(()=>{const bt=billsToEnter();return bt.length?`<div class="alert"><b>${bt.length===1?'A bill to enter':'Bills to enter'}</b>${bt.map(x=>`<div class="tip"><span>${esc(x.b.name)} should be out by now${x.due<TODAY?`, and was due ${dl(x.due)}`:`, due ${wdl(x.due)}`}. Enter the amount due.</span><span class="row" style="margin:0;flex-wrap:nowrap"><input class="mini" type="number" step="any" min="0" inputmode="decimal" placeholder="~${Math.round(+x.b.amt||0)}" data-act="due" data-key="${esc(x.key)}" aria-label="Amount due for ${esc(x.b.name)}, due ${dl(x.due)}"><button class="btn sm" data-act="duesave" data-key="${esc(x.key)}">Save</button></span></div>`).join('')}<p class="muted" style="font-size:13px;margin:8px 0 0">The amount replaces the estimate for that month. Check the bill off below once it's paid.</p></div>`:''})()}
   ${tipsHtml(tips)}
   <div class="sec"><h2>Log spending</h2>${qaHtml()}</div>
@@ -1260,24 +1482,24 @@ function vList(kind){
   if(!list.length&&!cards.length)return`<div class="sec">${head}<div class="empty">${isB?'No bills yet. Add rent, subscriptions, loans and anything else with a due date.':'No income yet. Add each paycheck or other deposit with its dates.'}</div></div>`;
   const rows=[...list].sort((a,b)=>(a.planned?1:0)-(b.planned?1:0)).map(i=>{
     const sub=[i.variable&&kind==='income'?CONF[i.conf]:'',i.variable?i.basis:'',acct(i.to)?'Pays down '+acctName(i.to):''].filter(Boolean).join(', ');
-    return`<tr><td>${esc(i.name)}${i.planned?'<span class="pill">planned</span>':''}${i.auto?'<span class="pill">autopay</span>':''}${i.variable?'<span class="pill">estimate</span>':''}${sub?`<div class="muted" style="font-size:13px">${esc(sub)}</div>`:''}</td><td class="num">${i.variable?'~':''}${f2(+i.amt||0)}${isB&&i.variable?(()=>{const d=nextBill(i);if(!d)return'';const k=billKey(i,d),v=plan.actual?.[k],out=issuedOn(i,d)<=TODAY;return`<div class="since" style="margin-top:6px">Due ${dl(d)}${v!=null?', billed':out?', should be out':`, out around ${dl(issuedOn(i,d))}`}</div><input class="mini" type="number" step="any" min="0" inputmode="decimal" value="${v??''}" placeholder="amount due" data-act="due" data-key="${esc(k)}" aria-label="Amount due for ${esc(i.name)}, due ${dl(d)}">`})():''}</td><td>${esc(sched(i))}</td><td>${esc(acctName(i.acct))}</td>${isB?`<td>${esc(i.cat||'')}</td>`:''}<td class="act"><button class="btn sm" data-act="edit" data-kind="${kind}" data-id="${i.id}">Edit</button> <button class="btn sm ghost danger" data-act="del" data-kind="${kind}" data-id="${i.id}">Delete</button></td></tr>`;
-  }).join('')+cards.map(a=>`<tr><td>${esc(a.name)} payment<span class="pill">card statement</span><div class="muted" style="font-size:13px">Change it on the Accounts tab.</div></td><td class="num">${+a.stmt>0?f2(+a.stmt):'—'}</td><td>${esc(cardSched(a))}</td><td>${esc(acctName(a.payfrom))}</td><td>Card payment</td><td class="act"><button class="btn sm" data-act="edit" data-kind="accounts" data-id="${a.id}">Edit</button></td></tr>`).join('');
+    return`<tr><td>${esc(i.name)}${i.planned?'<span class="pill">planned</span>':''}${i.auto?'<span class="pill">autopay</span>':''}${i.variable?'<span class="pill">estimate</span>':''}${sub?`<div class="muted" style="font-size:13px">${esc(sub)}</div>`:''}</td><td class="num">${i.variable?'~':''}${f2(+i.amt||0)}${isB&&i.variable?(()=>{const d=nextBill(i);if(!d)return'';const k=billKey(i,d),v=plan.actual?.[k],out=issuedOn(i,d)<=TODAY;return`<div class="since" style="margin-top:6px">Due ${dl(d)}${v!=null?', billed':out?', should be out':`, out around ${dl(issuedOn(i,d))}`}</div><input class="mini" type="number" step="any" min="0" inputmode="decimal" value="${esc(v??'')}" placeholder="amount due" data-act="due" data-key="${esc(k)}" aria-label="Amount due for ${esc(i.name)}, due ${dl(d)}">`})():''}</td><td>${esc(sched(i))}</td><td>${esc(acctName(i.acct))}</td>${isB?`<td>${esc(i.cat||'')}</td>`:''}<td class="act"><button class="btn sm" data-act="edit" data-kind="${kind}" data-id="${esc(i.id)}">Edit</button> <button class="btn sm ghost danger" data-act="del" data-kind="${kind}" data-id="${esc(i.id)}">Delete</button></td></tr>`;
+  }).join('')+cards.map(a=>`<tr><td>${esc(a.name)} payment<span class="pill">card statement</span><div class="muted" style="font-size:13px">Change it on the Accounts tab.</div></td><td class="num">${+a.stmt>0?f2(+a.stmt):'—'}</td><td>${esc(cardSched(a))}</td><td>${esc(acctName(a.payfrom))}</td><td>Card payment</td><td class="act"><button class="btn sm" data-act="edit" data-kind="accounts" data-id="${esc(a.id)}">Edit</button></td></tr>`).join('');
   return`<div class="sec">${head}<div class="scroll"><table><thead><tr><th>${isB?'Bill':'Source'}</th><th class="num">Amount</th><th>Schedule</th><th>${isB?'Pays from':'Deposits into'}</th>${isB?'<th>Category</th>':''}<th></th></tr></thead><tbody>${rows}</tbody></table></div></div>${history(isB?'out':'in')}`;
 }
 function vAccounts(){
   const {end,endH}=project(),A=plan.accounts,as=A.filter(a=>['checking','savings','cash'].includes(a.type)),rt=A.filter(a=>a.type==='retirement'),hs=A.filter(isHSA),inv=A.filter(a=>a.type==='investment'),prop=A.filter(a=>a.type==='property'),cards=A.filter(a=>a.type==='credit'),loans=A.filter(a=>a.type==='loan');
   const {a:AS,d:DB}=assetsDebts();
   const endTh=end?`<th class="num">End of ${MON[view.m]}</th>`:'';
-  const balCell=a=>`<td class="num"><input class="mini" type="number" step="any" value="${+a.bal||0}" data-act="bal" data-id="${a.id}" aria-label="Balance of ${esc(a.name)}"><div class="since">${a.upd?dl(a.upd):''}</div></td>`;
+  const balCell=a=>`<td class="num"><input class="mini" type="number" step="any" value="${+a.bal||0}" data-act="bal" data-id="${esc(a.id)}" aria-label="Balance of ${esc(a.name)}"><div class="since">${a.upd?dl(a.upd):''}</div></td>`;
   const endCell=a=>end?`<td class="num ${end[a.id]<0&&!isDebt(a)?'neg':''}">${f0(end[a.id])}</td>`:'';
-  const btns=a=>`<td class="act"><button class="btn sm" data-act="edit" data-kind="accounts" data-id="${a.id}">Edit</button> <button class="btn sm ghost danger" data-act="del" data-kind="accounts" data-id="${a.id}">Delete</button></td>`;
+  const btns=a=>`<td class="act"><button class="btn sm" data-act="edit" data-kind="accounts" data-id="${esc(a.id)}">Edit</button> <button class="btn sm ghost danger" data-act="del" data-kind="accounts" data-id="${esc(a.id)}">Delete</button></td>`;
   const tbl=(rows,head)=>rows.length?`<div class="scroll"><table><thead><tr>${head}</tr></thead><tbody>${rows}</tbody></table></div>`:'';
   const intTot=as.filter(hasInt).reduce((s,a)=>s+mInt(a),0);
   const limCells=a=>{const L=+a.limit||0,B=+a.bal||0;return`<td class="num">${L?f0(L):'—'}</td><td class="num">${L?Math.round(B/L*100)+'%':'—'}</td>`};
   return`<div class="row" style="margin-top:16px"><button class="btn pri" data-act="add" data-kind="accounts">Add account</button><span class="muted small">Editing a balance records a net worth snapshot for the month.</span></div>
   <div class="eq"><div class="t"><small>Assets</small><b>${f0(AS)}</b></div><span class="op">−</span><div class="t"><small>Debts</small><b>${f0(DB)}</b></div><span class="op">=</span><div class="t free"><small>Net worth</small><b class="${AS-DB<0?'neg':''}">${f0(AS-DB)}</b></div></div>
-  ${as.length?`<div class="sec"><h2>Cash</h2>${tbl(as.map(a=>`<tr><td>${esc(a.name)}</td><td>${esc(TYPES.find(t=>t[0]===a.type)?.[1]||'')}</td>${balCell(a)}<td class="num"><input class="mini" style="width:76px" type="number" step="any" min="0" value="${+a.apy||''}" placeholder="0" data-act="apy" data-id="${a.id}" aria-label="APY of ${esc(a.name)}"></td><td class="num">${hasInt(a)?f2(mInt(a)):'—'}</td>${endCell(a)}${btns(a)}</tr>`).join(''),`<th>Name</th><th>Type</th><th class="num">Balance</th><th class="num">APY %</th><th class="num">Interest a month</th>${endTh}<th></th>`)}${intTot?`<p class="muted small">Estimated interest: ${f2(intTot)} a month, about ${f0(intTot*12)} a year.</p>`:''}</div>`:''}
-  ${inv.length?`<div class="sec"><h2>Investments</h2>${tbl(inv.map(a=>`<tr><td>${esc(a.name)}</td>${balCell(a)}<td class="num"><input class="mini" type="number" step="any" value="${+a.cash||0}" data-act="cash" data-id="${a.id}" aria-label="Buying power of ${esc(a.name)}"></td><td class="num">${f0((+a.bal||0)+(+a.cash||0))}</td><td>${+a.divAmt>0?`${f2(+a.divAmt)}, ${esc(FREQS.find(f=>f[0]===(a.divFreq||'quarterly'))?.[1]||'')}, ${a.divMode==='reinvest'?'reinvested':'to buying power'}`:'—'}</td>${end?`<td class="num">${f0(endH[a.id])} invested<br>${f0(end[a.id])} cash</td>`:''}${btns(a)}</tr>`).join(''),`<th>Name</th><th class="num">Invested</th><th class="num">Buying power</th><th class="num">Total</th><th>Dividends</th>${endTh}<th></th>`)}</div>`:''}
+  ${as.length?`<div class="sec"><h2>Cash</h2>${tbl(as.map(a=>`<tr><td>${esc(a.name)}</td><td>${esc(TYPES.find(t=>t[0]===a.type)?.[1]||'')}</td>${balCell(a)}<td class="num"><input class="mini" style="width:76px" type="number" step="any" min="0" value="${+a.apy||''}" placeholder="0" data-act="apy" data-id="${esc(a.id)}" aria-label="APY of ${esc(a.name)}"></td><td class="num">${hasInt(a)?f2(mInt(a)):'—'}</td>${endCell(a)}${btns(a)}</tr>`).join(''),`<th>Name</th><th>Type</th><th class="num">Balance</th><th class="num">APY %</th><th class="num">Interest a month</th>${endTh}<th></th>`)}${intTot?`<p class="muted small">Estimated interest: ${f2(intTot)} a month, about ${f0(intTot*12)} a year.</p>`:''}</div>`:''}
+  ${inv.length?`<div class="sec"><h2>Investments</h2>${tbl(inv.map(a=>`<tr><td>${esc(a.name)}</td>${balCell(a)}<td class="num"><input class="mini" type="number" step="any" value="${+a.cash||0}" data-act="cash" data-id="${esc(a.id)}" aria-label="Buying power of ${esc(a.name)}"></td><td class="num">${f0((+a.bal||0)+(+a.cash||0))}</td><td>${+a.divAmt>0?`${f2(+a.divAmt)}, ${esc(FREQS.find(f=>f[0]===(a.divFreq||'quarterly'))?.[1]||'')}, ${a.divMode==='reinvest'?'reinvested':'to buying power'}`:'—'}</td>${end?`<td class="num">${f0(endH[a.id])} invested<br>${f0(end[a.id])} cash</td>`:''}${btns(a)}</tr>`).join(''),`<th>Name</th><th class="num">Invested</th><th class="num">Buying power</th><th class="num">Total</th><th>Dividends</th>${endTh}<th></th>`)}</div>`:''}
   ${rt.length?`<div class="sec"><h2>Retirement</h2>${tbl(rt.map(a=>{const n=PER[a.cfreq||'biweekly']||0,you=+a.contrib||0,er=+a.match||0;return`<tr><td>${esc(a.name)}</td>${balCell(a)}<td>${you>0||er>0?`${you>0?`You ${f2(you)} (${a.cfrom?'from '+esc(acctName(a.cfrom)):'payroll'})`:''}${you>0&&er>0?', ':''}${er>0?`employer ${f2(er)}`:''}<div class="muted" style="font-size:13px">${esc(sched({freq:a.cfreq,date:a.cdate,day2:a.cday2}))}</div>`:'—'}</td><td class="num">${(you+er)>0?f0((you+er)*n):'—'}</td>${end?`<td class="num">${f0(end[a.id])}</td>`:''}${btns(a)}</tr>`}).join(''),`<th>Name</th><th class="num">Balance</th><th>Contributions</th><th class="num">Per year</th>${endTh}<th></th>`)}</div>`:''}
   ${hs.length?`<div class="sec"><h2>Health savings (HSA)</h2>${tbl(hs.map(a=>{
     const n=PER[a.cfreq||'biweekly']||0,you=+a.contrib||0,er=+a.match||0,sp=hsaSpent(a),Y=hsaYear(a),over=Y.total>Y.limit;
@@ -1288,7 +1510,7 @@ function vAccounts(){
     ${end?`<td class="num">${f0(end[a.id])}</td>`:''}${btns(a)}</tr>`}).join(''),`<th>Name</th><th class="num">Balance</th><th class="num">Available now</th><th>Contributions</th><th class="num">Per year</th><th class="num">This year vs limit</th>${endTh}<th></th>`)}
   <p class="muted small">Pay with the HSA card by choosing the HSA under Paid with when you log spending. Those purchases lower the HSA's available balance and aren't counted against your spending money. When you type a new balance from your HSA provider, purchases logged before then count as already in it. The yearly limit covers your money and your employer's together.</p></div>`:''}
   ${prop.length?`<div class="sec"><h2>Vehicles and property</h2>${tbl(prop.map(a=>`<tr><td>${esc(a.name)}</td>${balCell(a)}${btns(a)}</tr>`).join(''),'<th>Name</th><th class="num">Value</th><th></th>')}</div>`:''}
-  ${cards.length?`<div class="sec"><h2>Credit cards</h2>${tbl(cards.map(a=>`<tr><td>${esc(a.name)}</td>${balCell(a)}${limCells(a)}<td class="num"><input class="mini" type="number" step="any" min="0" value="${+a.stmt||''}" placeholder="0" data-act="stmt" data-id="${a.id}" aria-label="Statement balance of ${esc(a.name)}"></td><td>${a.duedate?wdl(a.duedate):'—'}<div class="since">${+a.dueDay?'every '+ord(+a.dueDay):'set a due day'}</div></td><td>${(()=>{if(!a.duedate||!+a.stmt)return'—';const key=`out:c-${a.id}:${a.duedate}`,v=plan.payOn?.[key]||addDays(a.duedate,-(+a.lead||0));return`<input class="mid" type="date" value="${v}" data-act="payon" data-key="${esc(key)}" aria-label="Pay date for ${esc(a.name)}"><div class="since ${v>a.duedate?'neg':''}">${v>a.duedate?'after the due date':plan.payOn?.[key]?'moved':'default'}</div>`})()}</td><td class="num"><input class="mini" type="number" step="any" min="0" value="${+a.typ||''}" placeholder="auto" data-act="typ" data-id="${a.id}" aria-label="Typical monthly payment of ${esc(a.name)}"></td><td>${esc(acctName(a.payfrom))}</td>${endCell(a)}<td class="act"><button class="btn sm" data-act="nextstmt" data-id="${a.id}">New statement</button></td>${btns(a)}</tr>`).join(''),`<th>Name</th><th class="num">Owed now</th><th class="num">Limit</th><th class="num">Used</th><th class="num">Statement</th><th>Due</th><th>Pay on</th><th class="num">Typical monthly</th><th>Pays from</th>${endTh}<th></th><th></th>`)}<p class="muted small">Due dates follow each card's fixed due day. The pay date defaults to the due date, or earlier if you set a usual lead time, and you can move any single payment. The statement is scheduled on its pay date. Later months use your typical payment, or an estimate from bills and logged spending on the card when that's blank.</p></div>`:''}
+  ${cards.length?`<div class="sec"><h2>Credit cards</h2>${tbl(cards.map(a=>`<tr><td>${esc(a.name)}</td>${balCell(a)}${limCells(a)}<td class="num"><input class="mini" type="number" step="any" min="0" value="${+a.stmt||''}" placeholder="0" data-act="stmt" data-id="${esc(a.id)}" aria-label="Statement balance of ${esc(a.name)}"></td><td>${a.duedate?wdl(a.duedate):'—'}<div class="since">${+a.dueDay?'every '+ord(+a.dueDay):'set a due day'}</div></td><td>${(()=>{if(!a.duedate||!+a.stmt)return'—';const key=`out:c-${a.id}:${a.duedate}`,v=plan.payOn?.[key]||addDays(a.duedate,-(+a.lead||0));return`<input class="mid" type="date" value="${esc(v)}" data-act="payon" data-key="${esc(key)}" aria-label="Pay date for ${esc(a.name)}"><div class="since ${v>a.duedate?'neg':''}">${v>a.duedate?'after the due date':plan.payOn?.[key]?'moved':'default'}</div>`})()}</td><td class="num"><input class="mini" type="number" step="any" min="0" value="${+a.typ||''}" placeholder="auto" data-act="typ" data-id="${esc(a.id)}" aria-label="Typical monthly payment of ${esc(a.name)}"></td><td>${esc(acctName(a.payfrom))}</td>${endCell(a)}<td class="act"><button class="btn sm" data-act="nextstmt" data-id="${esc(a.id)}">New statement</button></td>${btns(a)}</tr>`).join(''),`<th>Name</th><th class="num">Owed now</th><th class="num">Limit</th><th class="num">Used</th><th class="num">Statement</th><th>Due</th><th>Pay on</th><th class="num">Typical monthly</th><th>Pays from</th>${endTh}<th></th><th></th>`)}<p class="muted small">Due dates follow each card's fixed due day. The pay date defaults to the due date, or earlier if you set a usual lead time, and you can move any single payment. The statement is scheduled on its pay date. Later months use your typical payment, or an estimate from bills and logged spending on the card when that's blank.</p></div>`:''}
   ${loans.length?`<div class="sec"><h2>Loans</h2>${tbl(loans.map(a=>`<tr><td>${esc(a.name)}${a.note?`<div class="muted small">${esc(a.note)}</div>`:''}</td>${balCell(a)}<td class="num">${+a.apr?(+a.apr)+'%':'—'}</td><td class="num">${+a.min?f2(+a.min):'—'}</td><td>${esc(payoff(a))}</td>${endCell(a)}${btns(a)}</tr>`).join(''),`<th>Name</th><th class="num">Owed</th><th class="num">APR</th><th class="num">Payment</th><th>Payoff</th>${endTh}<th></th>`)}</div>`:''}`;
 }
 
@@ -1319,7 +1541,7 @@ function vDebt(){
   ${p?`<div class="cards"><div class="card"><small>Debt-free</small><b>${mLabel(p.last)}</b>${extra&&b?`<small>${b.last-p.last} months sooner than minimums only</small>`:''}</div><div class="card"><small>Interest you'll pay</small><b>${f0(p.interest)}</b>${extra&&b?`<small>${f0(b.interest-p.interest)} saved</small>`:''}</div></div>
   <div class="scroll" style="margin-top:12px"><table><thead><tr><th>Debt</th><th class="num">Owed</th><th class="num">APR</th><th class="num">Payment</th><th>Minimums only</th><th>With your plan</th></tr></thead><tbody>${plan.accounts.filter(a=>p.done[a.id]!=null).map(a=>`<tr><td>${esc(a.name)}</td><td class="num">${f2(+a.bal)}</td><td class="num">${(+a.apr||0)}%</td><td class="num">${f2(+a.min)}</td><td>${b&&b.done[a.id]!=null?mLabel(b.done[a.id]):'—'}</td><td><b>${mLabel(p.done[a.id])}</b></td></tr>`).join('')}</tbody></table></div>
   <p class="muted small">Extra money goes to one debt at a time; when a debt is paid off, its payment rolls to the next. Cards you pay in full each month aren't included, since they cost no interest.</p>`:'<div class="empty">No interest-bearing debt with a monthly payment. Add an APR and payment to a loan or card to plan a payoff.</div>'}</div>
-  ${cards.length?`<div class="sec"><h2>Cards</h2><div class="scroll"><table><thead><tr><th>Card</th><th class="num">Owed</th><th class="num">Limit</th><th>Used</th><th class="num">Statement</th><th>Due</th><th>Paying</th></tr></thead><tbody>${cards.map(a=>{const L=+a.limit||0,u=L?(+a.bal||0)/L*100:0;return`<tr><td>${esc(a.name)}${+a.apr>0?`<span class="pill">${a.apr}% APR</span>`:''}</td><td class="num">${f2(+a.bal||0)}</td><td class="num">${L?f0(L):'—'}</td><td>${L?`<div class="bar${u>30?' over':''}" title="${Math.round(u)}%"><i style="width:${Math.min(100,u)}%"></i></div><span class="small muted">${Math.round(u)}%</span>`:'—'}</td><td class="num">${+a.stmt?f2(+a.stmt):'—'}</td><td>${a.duedate?dl(a.duedate):'—'}<div class="since">${+a.dueDay?'every '+ord(+a.dueDay):''}</div></td><td>${(()=>{if(!a.duedate||!+a.stmt)return'—';const v=plan.payOn?.[`out:c-${a.id}:${a.duedate}`]||addDays(a.duedate,-(+a.lead||0));return`<span class="${v>a.duedate?'neg':''}">${dl(v)}</span>`})()}</td></tr>`}).join('')}</tbody></table></div><p class="muted small">Keeping each card under 30% of its limit helps your credit score.</p></div>`:''}`;
+  ${cards.length?`<div class="sec"><h2>Cards</h2><div class="scroll"><table><thead><tr><th>Card</th><th class="num">Owed</th><th class="num">Limit</th><th>Used</th><th class="num">Statement</th><th>Due</th><th>Paying</th></tr></thead><tbody>${cards.map(a=>{const L=+a.limit||0,u=L?(+a.bal||0)/L*100:0;return`<tr><td>${esc(a.name)}${+a.apr>0?`<span class="pill">${esc(+a.apr)}% APR</span>`:''}</td><td class="num">${f2(+a.bal||0)}</td><td class="num">${L?f0(L):'—'}</td><td>${L?`<div class="bar${u>30?' over':''}" title="${Math.round(u)}%"><i style="width:${Math.min(100,u)}%"></i></div><span class="small muted">${Math.round(u)}%</span>`:'—'}</td><td class="num">${+a.stmt?f2(+a.stmt):'—'}</td><td>${a.duedate?dl(a.duedate):'—'}<div class="since">${+a.dueDay?'every '+ord(+a.dueDay):''}</div></td><td>${(()=>{if(!a.duedate||!+a.stmt)return'—';const v=plan.payOn?.[`out:c-${a.id}:${a.duedate}`]||addDays(a.duedate,-(+a.lead||0));return`<span class="${v>a.duedate?'neg':''}">${dl(v)}</span>`})()}</td></tr>`}).join('')}</tbody></table></div><p class="muted small">Keeping each card under 30% of its limit helps your credit score.</p></div>`:''}`;
 }
 
 /* ---------- spending ---------- */
@@ -1347,7 +1569,7 @@ function aiSelSync(){
 function txRows(){
   const l=txFiltered(),cl=catList(),sel=monthHasAI();
   if(!l.length)return`<tr><td colspan="${sel?7:6}" class="muted">Nothing logged${fq||fcat||ftag?' matches these filters':' this month yet'}.</td></tr>`;
-  return l.map(t=>{const cats=cl.includes(t.cat)?cl:[...cl,t.cat];return`<tr><td>${dl(t.date)}</td><td>${esc(t.desc)}${t.tag?`<span class="pill tag">${esc(t.tag)}</span>`:''}${t.ai?'<span class="pill" title="Category picked by AI. Change it, or tick it and approve above.">AI</span>':''}</td><td><select data-act="tcat" data-id="${t.id}" aria-label="Category" style="width:auto">${cats.map(c=>`<option${c===t.cat?' selected':''}>${esc(c)}</option>`).join('')}</select></td><td>${esc(acctName(t.acct))}</td><td class="num ${t.amt>0?'pos':''}">${f2(t.amt)}</td><td class="act"><button class="btn sm" data-act="tedit" data-id="${t.id}">Edit</button> <button class="btn sm ghost danger" data-act="tdel" data-id="${t.id}" aria-label="Delete">×</button></td>${sel?`<td class="num">${t.ai?`<input type="checkbox" data-act="taisel" data-id="${t.id}"${aiSkip.has(t.id)?'':' checked'} aria-label="Approve the AI pick for ${esc(t.desc)}">`:''}</td>`:''}</tr>`}).join('');
+  return l.map(t=>{const cats=cl.includes(t.cat)?cl:[...cl,t.cat];return`<tr><td>${dl(t.date)}</td><td>${esc(t.desc)}${t.tag?`<span class="pill tag">${esc(t.tag)}</span>`:''}${t.ai?'<span class="pill" title="Category picked by AI. Change it, or tick it and approve above.">AI</span>':''}</td><td><select data-act="tcat" data-id="${esc(t.id)}" aria-label="Category" style="width:auto">${cats.map(c=>`<option${c===t.cat?' selected':''}>${esc(c)}</option>`).join('')}</select></td><td>${esc(acctName(t.acct))}</td><td class="num ${t.amt>0?'pos':''}">${f2(t.amt)}</td><td class="act"><button class="btn sm" data-act="tedit" data-id="${esc(t.id)}">Edit</button> <button class="btn sm ghost danger" data-act="tdel" data-id="${esc(t.id)}" aria-label="Delete">×</button></td>${sel?`<td class="num">${t.ai?`<input type="checkbox" data-act="taisel" data-id="${esc(t.id)}"${aiSkip.has(t.id)?'':' checked'} aria-label="Approve the AI pick for ${esc(t.desc)}">`:''}</td>`:''}</tr>`}).join('');
 }
 function vSpend(){
   const tags=tagList(),L=logged(mk(view)),byTag={},its=(tx[mk(view)]?.items||[]),aiN=its.filter(t=>t.ai).length,unN=its.filter(t=>t.amt<0&&t.cat==='Uncategorized').length;if(fcat==='__ai'&&!aiN)fcat='';L.items.forEach(t=>{if(t.tag)byTag[t.tag]=(byTag[t.tag]||0)-t.amt});
@@ -1464,7 +1686,7 @@ async function wireAsk(){
   const box=$('#askbody');if(!box)return;
   const c=await sampleCaps();if(!$('#askbody'))return;
   if(!c?.chat){if(c?.desktop)box.innerHTML=`<p class="muted small">${aiSetup(c)}</p><button class="btn sm" data-act="askchk">Check again</button>`;else $('#ask').hidden=true;return}
-  box.innerHTML=`<p class="muted small">${c.local?`Answered on this Mac by ${LOCAL_MODEL}. Nothing leaves your computer.`:'Answered by Claude.'} The app works out the totals for ${MONL[view.m]} and the 5 months before it, and the AI explains them, so double-check anything important.</p>
+  box.innerHTML=`<p class="muted small">${c.local?`Answered on this Mac by ${esc(LOCAL_MODEL)}. Nothing leaves your computer.`:'Answered by Claude.'} The app works out the totals for ${MONL[view.m]} and the 5 months before it, and the AI explains them, so double-check anything important.</p>
   <div class="chatlog" id="asklog"></div>
   <div class="row" style="margin-top:10px">${ASK_SUGGEST.map(q=>`<button class="btn sm" type="button" data-askq="${esc(q)}">${esc(q)}</button>`).join('')}</div>
   <form class="row" id="askf" autocomplete="off"><input class="grow" id="askq" placeholder="Ask anything about your spending" aria-label="Your question"><button class="btn pri" type="submit" id="askgo">Ask</button><button class="btn" type="button" id="askstop" hidden>Stop</button><button class="btn ghost" type="button" id="askclr">Clear</button></form>`;
@@ -1497,7 +1719,7 @@ function goalCard(g){
   const t=+g.target||0,s=+g.saved||0,pct=t>0?Math.min(100,s/t*100):0,need=goalNeed(g);
   let when='No target date';
   if(g.date){const ml=mi(g.date)-(now.getFullYear()*12+now.getMonth());when=`By ${MON[+g.date.slice(5,7)-1]} ${g.date.slice(0,4)}, ${s>=t?'reached':ml<=0?'due now':ml+' months left'}`}
-  return`<div class="goal"><span class="nm">${esc(g.name)}</span><span class="act"><button class="btn sm" data-act="fund" data-id="${g.id}">Add funds</button> <button class="btn sm" data-act="edit" data-kind="goals" data-id="${g.id}">Edit</button> <button class="btn sm ghost danger" data-act="del" data-kind="goals" data-id="${g.id}">Delete</button></span>
+  return`<div class="goal"><span class="nm">${esc(g.name)}</span><span class="act"><button class="btn sm" data-act="fund" data-id="${esc(g.id)}">Add funds</button> <button class="btn sm" data-act="edit" data-kind="goals" data-id="${esc(g.id)}">Edit</button> <button class="btn sm ghost danger" data-act="del" data-kind="goals" data-id="${esc(g.id)}">Delete</button></span>
   <span class="meta">${f0(s)} of ${f0(t)}, ${when}${need?`, needs ${f0(need)} a month`:''}${g.acct?`, kept in ${esc(acctName(g.acct))}`:''}</span><div class="bar"><i style="width:${pct}%"></i></div></div>`;
 }
 function vGoals(){
@@ -1547,13 +1769,16 @@ document.addEventListener('click',e=>{
   else if(act==='kgo')kickGo();
   else if(act==='askchk')wireAsk();
   else if(act==='duesave'){const el=b.closest('.tip')?.querySelector('[data-act="due"]');if(el&&el.value.trim()&&setDue(b.dataset.key,el.value)){paint();dueToast(b.dataset.key)}}
-  else if(act==='kest'){const el=document.querySelector(`[data-kb="${id}"]`);if(el)el.value=b.dataset.v}
-  else if(act==='kuse')document.querySelectorAll('[data-act="kest"]').forEach(x=>{const el=document.querySelector(`[data-kb="${x.dataset.id}"]`);if(el)el.value=x.dataset.v});
+  else if(act==='kest'){const el=document.querySelector(`[data-kb="${CSS.escape(id)}"]`);if(el)el.value=b.dataset.v}
+  else if(act==='kuse')document.querySelectorAll('[data-act="kest"]').forEach(x=>{const el=document.querySelector(`[data-kb="${CSS.escape(x.dataset.id)}"]`);if(el)el.value=x.dataset.v});
   else if(act==='add')edit(kind);else if(act==='edit')edit(kind,id);else if(act==='del')del(kind,id);
   else if(act==='fund')fundGoal(id);
   else if(act==='nextstmt')nextStmt(id);
   else if(act==='ics'){const {tips}=project();const sel=b.dataset.i==='all'?tips:[tips[+b.dataset.i]].filter(Boolean);if(sel.length)tipIcs(sel)}
-  else if(act==='backup')backup();else if(act==='restore')$('#rf').click();
+  else if(act==='backup')backup();
+  else if(act==='restore'){if(saveBlocked())toast(Object.keys(S.bad).length?'First deal with the unreadable data in the note at the top, then restore':'Nothing can be saved right now. Reload the page, then restore');else $('#rf').click()}
+  else if(act==='badsave')saveBad().then(()=>toast('Copy saved. Keep that file: it holds the data exactly as it was stored.'),()=>toast('The copy was not saved'));
+  else if(act==='badclear')clearBad();
   else if(act==='tadd')editTx();else if(act==='tedit')editTx(id);
   else if(act==='tdel'){const m=mk(view);tx[m].items=tx[m].items.filter(t=>t.id!==id);saveTx(m);paint()}
   else if(act==='timport')openImport();else if(act==='trules')editRules();
@@ -1650,10 +1875,11 @@ addEventListener('pagehide',flushAll);
   moveOldKeys();
   try{plan=Object.assign(blank(),await sRead('plan')||{})}
   catch(e){S.locked=true;plan=blank();status('Load failed: reload before editing','bad')}
+  showBad();
   if(!S.locked)status(okMsg());
   plan.payOn=plan.payOn||{};
   if(upgrade(plan))savePlan();
-  const ui=lget('ui');if(ui&&VIEWS[ui.tab]&&ui.tab!=='kickoff')tab=ui.tab;
+  const ui=lget('ui');if(ui&&typeof ui.tab==='string'&&Object.hasOwn(VIEWS,ui.tab)&&ui.tab!=='kickoff')tab=ui.tab;
   if(plan.kickoff&&!plan.kickDone&&plan.accounts.length)tab='kickoff';
   render();
 })();

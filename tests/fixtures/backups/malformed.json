@@ -1,0 +1,39 @@
+{
+ "app": "budgeter",
+ "version": 2,
+ "exported": "2026-11-16T18:04:11.512Z",
+ "plan": {
+  "v": 2,
+  "income": [
+   {"id": "inc01ab", "name": "Paycheck", "amt": "2,310.55", "freq": "fortnightly", "date": "11/06/2026", "acct": "chk01ab"}
+  ],
+  "bills": [
+   {"id": "bil01ab", "name": "Rent", "amt": 1850, "freq": "monthly", "date": "2026-11-01", "acct": "chk01ab", "cat": "Housing"},
+   {"id": "bil01ab", "name": "Rent again, same id", "amt": 1850, "freq": "monthly", "date": "2026-11-01", "acct": "chk01ab", "cat": "Housing"}
+  ],
+  "accounts": [
+   {"id": "chk01ab", "name": "Checking", "type": "chequing", "bal": null}
+  ],
+  "goals": "none",
+  "cats": [{"name": "Groceries", "budget": 650}, {"budget": 10}],
+  "rules": "",
+  "done": null,
+  "actual": {"out:bil01ab:2026-11-01": "1850"},
+  "applied": {},
+  "nw": {"2026-10": {"a": 1, "d": 2}},
+  "merch": {},
+  "payOn": {}
+ },
+ "tx": {
+  "2026-13": {"items": []},
+  "2026-11": {
+   "items": [
+    {"id": "tx101ab", "date": "2026-11-02", "desc": "TRADER JOE'S #552", "amt": "12,50", "cat": "Groceries", "acct": "chk01ab"},
+    {"id": "tx102cd", "date": "2026-11-31", "desc": "CORNER STORE", "amt": -4.25, "cat": "Groceries", "acct": "chk01ab"},
+    {"id": "tx103ef", "desc": "NO DATE", "amt": -1, "cat": "Other"},
+    null
+   ]
+  },
+  "2026-10": "not a month"
+ }
+}

@@ -1,0 +1,88 @@
+{
+ "app": "budgeter",
+ "version": 2,
+ "exported": "2026-11-16T18:04:11.512Z",
+ "plan": {
+  "v": 2,
+  "income": [
+   {"id": "inc01ab", "name": "Paycheck", "variable": false, "amt": 2310.55, "conf": "avg", "basis": "", "freq": "biweekly", "date": "2026-11-06", "day2": 0, "acct": "chk01ab"},
+   {"id": "inc02cd", "name": "Tutoring", "variable": true, "amt": 300, "conf": "floor", "basis": "Average of the last 4 months", "freq": "monthly", "date": "2026-11-28", "day2": 0, "acct": "chk01ab"}
+  ],
+  "bills": [
+   {"id": "bil01ab", "name": "Rent", "variable": false, "amt": 1850, "basis": "", "issue": 0, "freq": "monthly", "date": "2026-11-01", "day2": 0, "end": "", "acct": "chk01ab", "to": "", "cat": "Housing", "auto": true, "planned": false},
+   {"id": "bil02cd", "name": "Electric", "variable": true, "amt": 120, "basis": "Average of the last 6 bills", "issue": 21, "freq": "monthly", "date": "2026-11-20", "day2": 0, "end": "", "acct": "crd01ab", "to": "", "cat": "Utilities", "auto": false, "planned": false},
+   {"id": "bil03ef", "name": "Car loan payment", "amt": 389.5, "freq": "monthly", "date": "2026-11-05", "end": "2029-06-05", "acct": "chk01ab", "to": "lon01ab", "cat": "Transport", "auto": true},
+   {"id": "bil04gh", "name": "Streaming", "variable": false, "amt": 15.49, "basis": "", "issue": 0, "freq": "monthly", "date": "2026-11-09", "day2": 0, "end": "", "acct": "crd01ab", "to": "", "cat": "Subscriptions", "auto": true, "planned": false}
+  ],
+  "accounts": [
+   {"id": "chk01ab", "name": "Checking", "type": "checking", "bal": 2450.17, "apy": 0.5, "intday": 0, "note": "", "upd": "2026-11-01", "updAt": 1793570400000},
+   {"id": "sav01ab", "name": "High-yield savings", "type": "savings", "bal": 8000, "apy": 4.1, "intday": 0, "note": "", "upd": "2026-11-01", "updAt": 1793570400000},
+   {"id": "crd01ab", "name": "Visa", "type": "credit", "bal": 612.4, "limit": 5000, "dueDay": 14, "duedate": "2026-11-14", "stmt": 540.22, "typ": 0, "payfrom": "chk01ab", "apr": 24.99, "min": 35, "lead": 2, "note": "", "upd": "2026-11-01", "updAt": 1793570400000},
+   {"id": "lon01ab", "name": "Car loan", "type": "loan", "bal": 14200, "apr": 6.4, "min": 389.5, "lead": 0, "note": "Ends June 2029", "upd": "2026-11-01", "updAt": 1793570400000},
+   {"id": "hsa01ab", "name": "HSA", "type": "hsa", "bal": 3100, "contrib": 100, "match": 25, "cfreq": "biweekly", "cdate": "2026-11-06", "cday2": 0, "cfrom": "", "ret": 5, "cover": "self", "age55": false, "ytd": 2100, "ytdOn": "2026-11-01", "note": "", "upd": "2026-11-01", "updAt": 1793570400000},
+   {"id": "inv01ab", "name": "Brokerage", "type": "investment", "bal": 12000, "cash": 300, "divAmt": 42.1, "divFreq": "quarterly", "divDate": "2026-12-15", "divMode": "cash", "note": "", "upd": "2026-11-01", "updAt": 1793570400000}
+  ],
+  "goals": [
+   {"id": "gol01ab", "name": "Emergency fund", "kind": "short", "target": 10000, "saved": 4200, "date": "2027-12-01", "acct": "sav01ab"},
+   {"id": "gol02cd", "name": "New roof", "kind": "long", "target": 18000, "saved": 0, "date": "", "acct": ""}
+  ],
+  "cats": [
+   {"name": "Housing", "budget": 0},
+   {"name": "Utilities", "budget": 0},
+   {"name": "Groceries", "budget": 650},
+   {"name": "Take Out", "budget": 120},
+   {"name": "Dining & Bars", "budget": 150},
+   {"name": "Transport", "budget": 200},
+   {"name": "Insurance", "budget": 0},
+   {"name": "Subscriptions", "budget": 40},
+   {"name": "Health", "budget": 50},
+   {"name": "Shopping", "budget": 200},
+   {"name": "Entertainment", "budget": 60},
+   {"name": "Travel", "budget": 0},
+   {"name": "Savings", "budget": 0},
+   {"name": "Other", "budget": 0}
+  ],
+  "rules": "costco = Groceries\nshell = Transport\nvenmo = Transfer",
+  "done": {"out:bil01ab:2026-11-01": 1, "out:bil03ef:2026-11-05": 1, "in:inc01ab:2026-11-06": 1},
+  "actual": {"out:bil02cd:2026-10-20": 131.07, "in:inc02cd:2026-10-28": 285},
+  "applied": {},
+  "showPlanned": false,
+  "interestIn": false,
+  "kickoff": "2026-10-01",
+  "kickDone": true,
+  "nw": {
+   "2026-10": {"a": 25010.33, "d": 15120.8, "dt": "2026-10-01"},
+   "2026-11": {"a": 25850.17, "d": 14812.4, "dt": "2026-11-01"}
+  },
+  "merch": {
+   "costco whse #0123": {"desc": "COSTCO WHSE #0123", "cat": "Groceries", "tag": "", "acct": "crd01ab"},
+   "sq *blue bottle 0412": {"desc": "SQ *BLUE BOTTLE 0412", "cat": "Dining & Bars", "tag": "coffee", "acct": "crd01ab"},
+   "shell oil 5744": {"desc": "SHELL OIL 5744", "cat": "Transport", "tag": "", "acct": "chk01ab"}
+  },
+  "extra": 100,
+  "strategy": "avalanche",
+  "payOn": {"out:c-crd01ab:2026-11-14": "2026-11-12"},
+  "_ts": 1794852251512
+ },
+ "tx": {
+  "2026-10": {
+   "items": [
+    {"id": "tx001ab", "date": "2026-10-03", "desc": "COSTCO WHSE #0123", "amt": -182.36, "cat": "Groceries", "acct": "crd01ab", "tag": "", "at": 1791100000000},
+    {"id": "tx002cd", "date": "2026-10-04", "desc": "SQ *BLUE BOTTLE 0412", "amt": -6.5, "cat": "Dining & Bars", "acct": "crd01ab", "tag": "coffee", "at": 1791190000000},
+    {"id": "tx003ef", "date": "2026-10-04", "desc": "SQ *BLUE BOTTLE 0412", "amt": -6.5, "cat": "Dining & Bars", "acct": "crd01ab", "tag": "coffee", "at": 1791190000001},
+    {"id": "tx004gh", "date": "2026-10-11", "desc": "SHELL OIL 5744", "amt": -48.07, "cat": "Transport", "acct": "chk01ab", "tag": "", "at": 1791700000000},
+    {"id": "tx005ij", "date": "2026-10-18", "desc": "CVS/PHARMACY #08812", "amt": -23.1, "cat": "Health", "acct": "hsa01ab", "tag": "", "at": 1792300000000}
+   ]
+  },
+  "2026-11": {
+   "items": [
+    {"id": "tx101ab", "date": "2026-11-02", "desc": "TRADER JOE'S #552", "amt": -64.18, "cat": "Groceries", "acct": "crd01ab", "tag": "", "at": 1793650000000, "ai": true},
+    {"id": "tx102cd", "date": "2026-11-03", "desc": "AMAZON MKTPL*AB12C", "amt": -0.1, "cat": "Shopping", "acct": "crd01ab", "tag": "", "at": 1793740000000},
+    {"id": "tx103ef", "date": "2026-11-03", "desc": "AMAZON MKTPL*ZZ9QX", "amt": -0.2, "cat": "Shopping", "acct": "crd01ab", "tag": "", "at": 1793740000001},
+    {"id": "tx104gh", "date": "2026-11-05", "desc": "AMAZON MKTPL REFUND", "amt": 19.99, "cat": "Shopping", "acct": "crd01ab", "tag": "", "at": 1793900000000},
+    {"id": "tx105ij", "date": "2026-11-07", "desc": "CITY PARKING METER", "amt": -3.335, "cat": "Uncategorized", "acct": "chk01ab", "tag": "", "at": 1794080000000},
+    {"id": "tx106kl", "date": "2026-11-08", "desc": "Café \"Lumière\" & Co <Downtown>", "amt": -12.4, "cat": "Dining & Bars", "acct": "crd01ab", "tag": "", "at": 1794160000000}
+   ]
+  }
+ }
+}
