@@ -5,6 +5,13 @@ const path = require('path');
 if (!app.requestSingleInstanceLock()) app.quit();
 
 let win;
+
+// Only https links are handed to the system. Anything else (http, file, custom protocols) is dropped.
+function openIfHttps(url) {
+  let protocol;
+  try { protocol = new URL(url).protocol; } catch (err) { return; }
+  if (protocol === 'https:') shell.openExternal(url);
+}
 function createWindow() {
   win = new BrowserWindow({
     width: 1200,
@@ -16,8 +23,8 @@ function createWindow() {
   });
   win.loadFile(path.join(__dirname, 'app', 'index.html'));
   // Links open in the default browser, never inside the app.
-  win.webContents.setWindowOpenHandler(({ url }) => { shell.openExternal(url); return { action: 'deny' }; });
-  win.webContents.on('will-navigate', (e, url) => { if (!url.startsWith('file://')) { e.preventDefault(); shell.openExternal(url); } });
+  win.webContents.setWindowOpenHandler(({ url }) => { openIfHttps(url); return { action: 'deny' }; });
+  win.webContents.on('will-navigate', (e, url) => { if (!url.startsWith('file://')) { e.preventDefault(); openIfHttps(url); } });
   // Backups and calendar reminders: ask where to save, starting in Downloads.
   win.webContents.session.on('will-download', (e, item) => {
     item.setSaveDialogOptions({ defaultPath: path.join(app.getPath('downloads'), item.getFilename()) });

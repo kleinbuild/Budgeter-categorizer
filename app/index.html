@@ -155,6 +155,8 @@ dialog::backdrop{background:rgba(10,15,20,.55)}
 .err{color:var(--neg);font-size:13.5px;min-height:1em;margin:0 0 8px}
 .acts{display:flex;justify-content:flex-end;gap:8px;margin-top:8px}
 .acts.left{justify-content:flex-start;margin-top:6px}
+.toast button{margin-left:14px;padding:3px 10px;border:1px solid currentColor;border-radius:6px;background:transparent;color:inherit;font:inherit;font-weight:600;cursor:pointer}
+.toast button:focus-visible{outline:2px solid currentColor;outline-offset:2px}
 .toast{position:fixed;left:50%;bottom:calc(20px + env(safe-area-inset-bottom,0px));transform:translateX(-50%);background:var(--ink);color:var(--bg);padding:9px 16px;border-radius:8px;font-size:14px;z-index:20}
 .since{font-size:12.5px;color:var(--muted);line-height:1.5}
 @media (max-width:760px){.qa{grid-template-columns:1fr 1fr}.qa .wide{grid-column:1/-1}.qa .btn{grid-column:1/-1}}
@@ -201,7 +203,16 @@ dialog::backdrop{background:rgba(10,15,20,.55)}
 (()=>{
 const $=s=>document.querySelector(s);
 const pad=n=>String(n).padStart(2,'0');
-const uid=()=>Math.random().toString(36).slice(2,9);
+/* A random version-4 UUID. crypto.randomUUID only exists in secure contexts (https or localhost),
+   so on a plain-http page we build the same thing from crypto.getRandomValues. */
+const uid=()=>{
+  if(typeof crypto.randomUUID==='function')return crypto.randomUUID();
+  const bytes=crypto.getRandomValues(new Uint8Array(16));
+  bytes[6]=(bytes[6]&0x0f)|0x40; // version 4
+  bytes[8]=(bytes[8]&0x3f)|0x80; // variant 10xx
+  const hex=[...bytes].map(byte=>byte.toString(16).padStart(2,'0')).join('');
+  return hex.slice(0,8)+'-'+hex.slice(8,12)+'-'+hex.slice(12,16)+'-'+hex.slice(16,20)+'-'+hex.slice(20);
+};
 const clone=o=>JSON.parse(JSON.stringify(o));
 const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const f0=n=>(n<-0.5?'−':'')+'$'+Math.abs(Math.round(n)).toLocaleString('en-US');
@@ -211,8 +222,14 @@ const MON=['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','De
 const MONL=['January','February','March','April','May','June','July','August','September','October','November','December'];
 const ord=n=>{const s=['th','st','nd','rd'],v=n%100;return n+(s[(v-20)%10]||s[v]||s[0])};
 const sum=a=>a.reduce((s,e)=>s+(+e.amt||0),0);
-const now=new Date();
-const TODAY=`${now.getFullYear()}-${pad(now.getMonth()+1)}-${pad(now.getDate())}`;
+/* "now" and TODAY are lets so a page left open past midnight can move on to the new day. */
+const isoDay=date=>`${date.getFullYear()}-${pad(date.getMonth()+1)}-${pad(date.getDate())}`;
+let now=new Date();
+let TODAY=isoDay(now);
+function refreshToday(){
+  now=new Date();
+  TODAY=isoDay(now);
+}
 const dl=iso=>iso?`${MON[+iso.slice(5,7)-1]} ${+iso.slice(8,10)}`:'';
 const mi=iso=>(+iso.slice(0,4))*12+(+iso.slice(5,7))-1;
 const FREQS=[['monthly','Monthly'],['semi','Twice a month'],['biweekly','Every 2 weeks'],['weekly','Weekly'],['quarterly','Every 3 months'],['semiannual','Every 6 months'],['yearly','Yearly'],['once','One time']];
@@ -243,7 +260,8 @@ function hsaSpent(a){
 }
 const hsaNow=a=>r2((+a.bal||0)-hsaSpent(a));
 /* IRS limits: [self-only, family]; people 55 and older can add a catch-up amount */
-const HSA_LIMITS={2025:[4300,8550],2026:[4400,8750]},HSA_CATCHUP=1000;
+/* The IRS publishes each next year's figures around May, so add the new year's line then. */
+const HSA_LIMITS={2025:[4300,8550],2026:[4400,8750],2027:[4500,9000]},HSA_CATCHUP=1000;
 function hsaYear(a){
   const y=now.getFullYear(),ly=HSA_LIMITS[y]?y:Math.max(...Object.keys(HSA_LIMITS).map(Number));
   const limit=HSA_LIMITS[ly][a.cover==='family'?1:0]+(a.age55?HSA_CATCHUP:0);
@@ -368,13 +386,18 @@ function toCents(amt){
   return sign*cents||0;
 }
 const monthCheck=items=>({count:items.length,cents:items.reduce((total,t)=>total+toCents(+t.amt||0),0)});
-async function backup(){
+/* The text of a backup file and how many months it holds. Used by Backup and by the safety copy made before a restore. */
+async function buildBackupText(){
   const months=await allMonths(),t={},check={};
   for(const m of months){await ensureTx(m);t[m]={items:tx[m].items};check[m]=monthCheck(tx[m].items)}
   /* "version" is the format of the file and stays 2, so older copies of Budgeter can still read it.
      "appVersion" says which Budgeter wrote it. */
   const data=JSON.stringify({app:'budgeter',version:2,appVersion:APP_VERSION,exported:new Date().toISOString(),plan,tx:t,check},null,1);
-  try{await saveFile(`budgeter-backup-${TODAY}.json`,data,'application/json');toast(`Backup ready: plan and ${months.length} months of spending`)}catch(e){toast('Backup was not saved')}
+  return{text:data,monthCount:months.length};
+}
+async function backup(){
+  const {text,monthCount}=await buildBackupText();
+  try{await saveFile(`budgeter-backup-${TODAY}.json`,text,'application/json');toast(`Backup ready: plan and ${monthCount} months of spending`)}catch(e){toast('Backup was not saved')}
 }
 
 /* ---------- checking a backup before it is restored ----------
@@ -513,14 +536,24 @@ function tell(title,lines){
   d.querySelector('[data-close]').onclick=()=>d.close();
   d.showModal();
 }
+const MAX_BACKUP_BYTES=50*1024*1024,MAX_CSV_BYTES=20*1024*1024,MAX_PDF_BYTES=50*1024*1024;
 function restore(file){
+  if(file.size>MAX_BACKUP_BYTES){toast('That file is over 50 MB, too big to be a Budgeter backup');return}
   const r=new FileReader();
   r.onload=()=>{
     let b;try{b=JSON.parse(String(r.result))}catch(e){toast('That file is not a valid backup');return}
     const problems=checkBackup(b);
     if(problems.length){tell('This backup was not restored',['Nothing was changed. The file has '+(problems.length>=MAX_PROBLEMS?'several problems, starting with':problems.length>1?'these problems':'this problem')+':',...problems]);return}
     const ms=Object.keys(b.tx||{});
-    ask(`Restore your plan and ${ms.length} months of spending from this backup${b.exported?' ('+b.exported.slice(0,10)+')':''}?`,'Restore',()=>{
+    ask(`Restore your plan and ${ms.length} months of spending from this backup${b.exported?' ('+b.exported.slice(0,10)+')':''}?`,'Restore',async()=>{
+      /* Save what is here now first, so a wrong restore can be undone. If that fails, restore nothing. */
+      try{
+        const safety=await buildBackupText();
+        await saveFile(`budgeter-before-restore-${TODAY}.json`,safety.text,'application/json');
+      }catch(e){
+        toast('Restore stopped: the safety copy of your current data could not be saved. Nothing was changed.');
+        return;
+      }
       plan=Object.assign(blank(),b.plan);plan.payOn=plan.payOn||{};upgrade(plan);savePlan();
       ms.forEach(m=>{tx[m]={items:b.tx[m].items};saveTx(m)});
       render();toast('Backup restored');
@@ -562,7 +595,24 @@ function clearBad(){
     setTimeout(()=>location.reload(),1500);
   });
 }
-function toast(t){const e=document.createElement('div');e.className='toast';e.setAttribute('role','status');e.textContent=t;document.body.appendChild(e);setTimeout(()=>e.remove(),2600)}
+/* action is optional: {label, run, ms}. It adds a button (such as Undo) that stays for ms milliseconds. */
+function toast(t,action){
+  const e=document.createElement('div');
+  e.className='toast';
+  e.setAttribute('role','status');
+  const message=document.createElement('span');
+  message.textContent=t;
+  e.appendChild(message);
+  if(action){
+    const button=document.createElement('button');
+    button.type='button';
+    button.textContent=action.label;
+    button.onclick=()=>{e.remove();action.run()};
+    e.appendChild(button);
+  }
+  document.body.appendChild(e);
+  setTimeout(()=>e.remove(),action?.ms||2600);
+}
 
 /* ---------- schedules ---------- */
 function occ(it,y,m){
@@ -759,9 +809,15 @@ function merchNorm(d){
   if(!mIdx||mIdx.src!==plan.merch){mIdx={src:plan.merch,map:new Map()};Object.values(plan.merch||{}).forEach(v=>{const k=mnorm(v.desc);if(k)mIdx.map.set(k,v)})}
   const k=mnorm(d);return k?mIdx.map.get(k):null;
 }
+/* The remembered merchant for a description, or undefined. Own keys only, so "constructor" or "toString" is not found. */
+function merchFor(desc){
+  const key=String(desc).toLowerCase();
+  if(plan.merch&&Object.hasOwn(plan.merch,key))return plan.merch[key];
+  return undefined;
+}
 /* exact merchant you've sorted before, then your rules, then a merchant that looks the same once cleaned up */
 function catFor(desc,amt){
-  const d=String(desc).toLowerCase(),mm=plan.merch?.[d];if(mm)return mm.cat;
+  const d=String(desc).toLowerCase(),mm=merchFor(desc);if(mm)return mm.cat;
   for(const l of (plan.rules||'').split('\n')){
     const i=l.lastIndexOf('=');if(i<1)continue;
     const k=l.slice(0,i).trim().toLowerCase(),c=l.slice(i+1).trim();
@@ -926,7 +982,8 @@ const txFields=()=>[
   {k:'acct',l:'Account',t:'select',opts:acctOpts()},
   {k:'tag',l:'Tag (optional)',list:tagList(),help:'A label that cuts across categories, like alcohol or work.'}];
 async function addTx(t){if(!t.at)t.at=Date.now();const nm=t.date.slice(0,7);await ensureTx(nm);tx[nm].items.push(t);saveTx(nm)}
-function learn(t,noSave){if(t.amt<0&&t.cat&&!NOSPEND.includes(t.cat)&&t.cat!=='Uncategorized'){(plan.merch=plan.merch||{})[t.desc.toLowerCase()]={desc:t.desc,cat:t.cat,tag:t.tag||'',acct:t.acct||''};mIdx=null;if(!noSave)savePlan()}}
+/* a merchant written "__proto__" would replace the map's prototype instead of adding an entry, so it isn't remembered */
+function learn(t,noSave){if(t.amt<0&&t.cat&&!NOSPEND.includes(t.cat)&&t.cat!=='Uncategorized'&&t.desc.toLowerCase()!=='__proto__'){(plan.merch=plan.merch||{})[t.desc.toLowerCase()]={desc:t.desc,cat:t.cat,tag:t.tag||'',acct:t.acct||''};mIdx=null;if(!noSave)savePlan()}}
 /* after you set a category, other charges this month from the same merchant that are unsorted or AI picks follow it */
 function follow(t,m){
   const k=mnorm(t.desc);if(!k||t.amt>=0)return 0;let n=0;
@@ -988,7 +1045,7 @@ function qaHtml(){
   const mkey=mk(view),d=TODAY.slice(0,7)===mkey?TODAY:(mkey<TODAY.slice(0,7)?mkey+'-'+pad(new Date(view.y,view.m+1,0).getDate()):mkey+'-01');
   const ms=Object.values(plan.merch||{}).map(v=>v.desc).sort((a,b)=>a.localeCompare(b));
   const cats=plan.cats.map(c=>c.name).concat(['Uncategorized']);
-  const fr={};Object.values(plan.merch||{}).forEach(v=>fr[v.cat]=(fr[v.cat]||0)+1);const dc=Object.keys(fr).sort((x,y)=>fr[y]-fr[x])[0]||'Uncategorized';
+  const fr=Object.create(null);Object.values(plan.merch||{}).forEach(v=>fr[v.cat]=(fr[v.cat]||0)+1);const dc=Object.keys(fr).sort((x,y)=>fr[y]-fr[x])[0]||'Uncategorized';
   return`<form class="qa" id="qa" autocomplete="off">
   <label>Date<input id="qa-date" type="date" value="${d}" required></label>
   <label>Amount<input id="qa-amt" type="number" step="0.01" min="0" inputmode="decimal" placeholder="0.00" required></label>
@@ -1001,7 +1058,7 @@ function qaHtml(){
 function wireQA(){
   const f=$('#qa');if(!f)return;
   $('#qa-desc').addEventListener('change',()=>{
-    const v=$('#qa-desc').value.trim(),mm=plan.merch?.[v.toLowerCase()];
+    const v=$('#qa-desc').value.trim(),mm=merchFor(v);
     if(mm){$('#qa-cat').value=mm.cat;$('#qa-tag').value=mm.tag||'';if(mm.acct)$('#qa-acct').value=mm.acct}
     else{const c=catFor(v,-1);if(c!=='Uncategorized'&&[...$('#qa-cat').options].some(o=>o.value===c))$('#qa-cat').value=c}
   });
@@ -1016,16 +1073,40 @@ function wireQA(){
 }
 
 /* ---------- import ---------- */
-const pn=s=>{s=String(s??'').trim();if(!s)return NaN;const neg=/^\(.*\)$/.test(s)||/^-/.test(s)||/-$/.test(s);const n=parseFloat(s.replace(/[^0-9.]/g,''));return isNaN(n)?NaN:neg?-n:n};
+/* Strict amount reader for imports: a number, or NaN when the text isn't clearly an amount.
+   Accepts one sign (before or after the amount, or around a $), parentheses for negatives, an optional $,
+   digits with comma thousands in groups of 3, and a decimal point. "12,50" and "1.234,56" are refused
+   rather than guessed at, because guessing wrong would silently change the money. */
+const AMOUNT_RE=/^([+-]?)(\$?)([+-]?)(\d{1,3}(?:,\d{3})+|\d+)?(?:\.(\d+))?([+-]?)$/;
+const pn=text=>{
+  let s=String(text??'').trim();
+  let negative=false;
+  const inParentheses=/^\((.*)\)$/.exec(s);
+  if(inParentheses){negative=true;s=inParentheses[1].trim()}
+  /* some banks write "$ 5.00" or "- 5.00": drop spaces that follow a sign or $, and any before a trailing sign */
+  s=s.replace(/([+$-])\s+/g,'$1').replace(/\s+([+-])$/,'$1');
+  const m=AMOUNT_RE.exec(s);
+  if(!m)return NaN;
+  const [,signBefore,,signAfterDollar,whole,fraction,signAfter]=m;
+  if(whole===undefined&&fraction===undefined)return NaN; // a sign or $ alone
+  const signs=[signBefore,signAfterDollar,signAfter].filter(Boolean);
+  if(signs.length>1)return NaN; // "--5", "-5-"
+  if(signs.length&&negative)return NaN; // "(-5)"
+  if(signs[0]==='-')negative=true;
+  const value=Number((whole||'0').replace(/,/g,'')+'.'+(fraction||'0'));
+  return negative?-value:value;
+};
+/* only dates that exist on the calendar: 2026-02-30 and 13/45/2026 are refused */
+const realDateOrNull=iso=>isIsoDate(iso)?iso:null;
 function pd(s){
   s=String(s||'').trim();let m;
-  if(m=s.match(/^(\d{4})-(\d{1,2})-(\d{1,2})/))return +m[2]>12?null:`${m[1]}-${pad(+m[2])}-${pad(+m[3])}`;
-  if(m=s.match(/^(\d{1,2})[\/\-.](\d{1,2})[\/\-.](\d{2,4})/)){let y=+m[3];if(y<100)y+=2000;return +m[1]>12?null:`${y}-${pad(+m[1])}-${pad(+m[2])}`}
+  if(m=s.match(/^(\d{4})-(\d{1,2})-(\d{1,2})/))return realDateOrNull(+m[2]>12?null:`${m[1]}-${pad(+m[2])}-${pad(+m[3])}`);
+  if(m=s.match(/^(\d{1,2})[\/\-.](\d{1,2})[\/\-.](\d{2,4})/)){let y=+m[3];if(y<100)y+=2000;return realDateOrNull(+m[1]>12?null:`${y}-${pad(+m[1])}-${pad(+m[2])}`)}
   if(/[a-z]{3}/i.test(s)){const d=new Date(s);if(!isNaN(d)&&d.getFullYear()>=2000)return`${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}`}
   return null;
 }
 function parseCSV(t){
-  t=t.replace(/^﻿/,'');const first=t.split(/\r?\n/,1)[0]||'';
+  t=t.replace(/^\uFEFF/,'');const first=t.split(/\r?\n/,1)[0]||'';
   const D=[',','\t',';'].map(d=>[d,first.split(d).length]).sort((a,b)=>b[1]-a[1])[0][0];
   const rows=[];let r=[],c='',q=false;
   for(let i=0;i<t.length;i++){
@@ -1232,7 +1313,7 @@ function openImport(){
     /* Count matches rather than just checking for one: two identical $5 coffees on the same day are both real, but
        re-importing an overlapping statement skips what's already logged. Overlapping screenshot pieces can repeat a
        row, so those are collapsed. */
-    const key=r=>`${r.date}|${r.desc.toLowerCase()}|${r.amt.toFixed(2)}`,have={},got={};
+    const key=r=>`${r.date}|${r.desc.toLowerCase()}|${r.amt.toFixed(2)}`,have=Object.create(null),got=Object.create(null);
     Object.values(tx).forEach(x=>x.items.forEach(t=>{const k=key(t);have[k]=(have[k]||0)+1}));
     fresh=rows.filter(r=>{const k=key(r);got[k]=(got[k]||0)+1;return collapse?got[k]===1&&!have[k]:got[k]>(have[k]||0)})
       .map(r=>({...r,cat:catFor(r.desc,r.amt),ai:false,on:true}));
@@ -1267,7 +1348,7 @@ function openImport(){
     }catch(x){if(run===aiRun){aiOn=false;aiBusy='';drawPrev();say(['offline','no_model','timeout','rate_limited'].includes(x?.code)?claudeErr(x,''):`${AI_NAME} couldn’t sort the rest this time. You can sort them after importing.`)}}
   }
 
-  $('#if').onchange=e=>{const f=e.target.files[0];if(!f)return;const r=new FileReader();r.onload=()=>loadCSV(String(r.result));r.readAsText(f)};
+  $('#if').onchange=e=>{const f=e.target.files[0];if(!f)return;if(f.size>MAX_CSV_BYTES){err('That file is over 20 MB, too big to read as a CSV.');e.target.value='';return}const r=new FileReader();r.onload=()=>loadCSV(String(r.result));r.readAsText(f)};
   $('#ipc').onclick=()=>{const t=$('#ip').value.trim();if(t)loadCSV(t);else err('Paste some text first.')};
   /* the AI copies each amount as printed and says which way the money went; the app sets the sign (see fromClaude) */
   const SHAPE='Return ONLY a JSON object {"transactions":[{"date":"YYYY-MM-DD","description":string,"amount":number,"money":"out"|"in"}]}. amount is exactly as printed, keeping its minus sign if it has one. money is "out" for purchases, fees, interest and withdrawals, and "in" for payments, deposits, credits and refunds.';
@@ -1303,6 +1384,7 @@ function openImport(){
   };
   $('#ipf').onchange=async e=>{
     const f=e.target.files[0];if(!f||!caps?.pdf)return;
+    if(f.size>MAX_PDF_BYTES){err('That PDF is over 50 MB, too big to read.');e.target.value='';return}
     err();$('#ipf').disabled=true;busy('Reading the PDF…');
     try{
       const r=await DESK.pdfText(await f.arrayBuffer());
@@ -1330,7 +1412,7 @@ function openImport(){
   $('#igo').onclick=async()=>{
     const a=$('#ia').value,ms={};
     aiRun++;const go=fresh.filter(r=>r.on);let taught=0;
-    go.forEach(r=>{const m=r.date.slice(0,7),mm=plan.merch?.[r.desc.toLowerCase()]||(r.amt<0?merchNorm(r.desc):null),t={id:uid(),at:Date.now(),date:r.date,desc:r.desc,amt:r.amt,cat:r.cat,acct:a,tag:mm?.tag||''};
+    go.forEach(r=>{const m=r.date.slice(0,7),mm=merchFor(r.desc)||(r.amt<0?merchNorm(r.desc):null),t={id:uid(),at:Date.now(),date:r.date,desc:r.desc,amt:r.amt,cat:r.cat,acct:a,tag:mm?.tag||''};
       if(r.ai)t.ai=true;if(r.mine){learn(t,true);taught++}(ms[m]=ms[m]||[]).push(t)});
     if(taught)savePlan();
     for(const m of Object.keys(ms)){await ensureTx(m);tx[m].items.push(...ms[m]);saveTx(m)}
@@ -1357,10 +1439,10 @@ function cal(list,tips){
 const isBudgetOut=e=>e.t==='out'&&!e.card&&!isHSA(acct(e.acct));
 function logged(m){
   const k=KICK(),items=(tx[m]||{items:[]}).items.filter(t=>!NOSPEND.includes(t.cat)&&!hsaPaid(t)&&!(k&&m===k.slice(0,7)&&t.date<k));
-  const by={};items.forEach(t=>{by[t.cat]=(by[t.cat]||0)-t.amt});return{items,by,total:Object.values(by).reduce((s,v)=>s+v,0)};
+  const by=Object.create(null);items.forEach(t=>{by[t.cat]=(by[t.cat]||0)-t.amt});return{items,by,total:Object.values(by).reduce((s,v)=>s+v,0)};
 }
 function budget(list){
-  const L=logged(mk(view)),bills={};
+  const L=logged(mk(view)),bills=Object.create(null);
   (list||[]).filter(isBudgetOut).forEach(e=>{const c=e.cat||'Other';bills[c]=(bills[c]||0)+e.amt});
   const known=plan.cats.map(c=>c.name),extra=[...new Set([...Object.keys(L.by),...Object.keys(bills)])].filter(k=>!known.includes(k));
   let tb=0,tbi=0,ts=0;
@@ -1572,7 +1654,7 @@ function txRows(){
   return l.map(t=>{const cats=cl.includes(t.cat)?cl:[...cl,t.cat];return`<tr><td>${dl(t.date)}</td><td>${esc(t.desc)}${t.tag?`<span class="pill tag">${esc(t.tag)}</span>`:''}${t.ai?'<span class="pill" title="Category picked by AI. Change it, or tick it and approve above.">AI</span>':''}</td><td><select data-act="tcat" data-id="${esc(t.id)}" aria-label="Category" style="width:auto">${cats.map(c=>`<option${c===t.cat?' selected':''}>${esc(c)}</option>`).join('')}</select></td><td>${esc(acctName(t.acct))}</td><td class="num ${t.amt>0?'pos':''}">${f2(t.amt)}</td><td class="act"><button class="btn sm" data-act="tedit" data-id="${esc(t.id)}">Edit</button> <button class="btn sm ghost danger" data-act="tdel" data-id="${esc(t.id)}" aria-label="Delete">×</button></td>${sel?`<td class="num">${t.ai?`<input type="checkbox" data-act="taisel" data-id="${esc(t.id)}"${aiSkip.has(t.id)?'':' checked'} aria-label="Approve the AI pick for ${esc(t.desc)}">`:''}</td>`:''}</tr>`}).join('');
 }
 function vSpend(){
-  const tags=tagList(),L=logged(mk(view)),byTag={},its=(tx[mk(view)]?.items||[]),aiN=its.filter(t=>t.ai).length,unN=its.filter(t=>t.amt<0&&t.cat==='Uncategorized').length;if(fcat==='__ai'&&!aiN)fcat='';L.items.forEach(t=>{if(t.tag)byTag[t.tag]=(byTag[t.tag]||0)-t.amt});
+  const tags=tagList(),L=logged(mk(view)),byTag=Object.create(null),its=(tx[mk(view)]?.items||[]),aiN=its.filter(t=>t.ai).length,unN=its.filter(t=>t.amt<0&&t.cat==='Uncategorized').length;if(fcat==='__ai'&&!aiN)fcat='';L.items.forEach(t=>{if(t.tag)byTag[t.tag]=(byTag[t.tag]||0)-t.amt});
   return`<div class="sec" style="margin-top:18px">${qaHtml()}</div>
   <div class="row"><button class="btn" data-act="timport">Import statement</button><button class="btn" data-act="trules">Category rules</button>${monthSort?`<button class="btn" data-act="taistop"${monthSort.stop?' disabled':''}>${monthSort.stop?'Stopping after this batch…':`Stop sorting (${monthSort.i} of ${monthSort.n} done${monthSort.m!==mk(view)?`, ${esc(monthSort.m)}`:''})`}</button>`:unN?`<button class="btn" data-act="taisort">Sort ${unN} uncategorized</button>`:''}${aiN?`<button class="btn" data-act="taiok"${aiChosen().length?'':' disabled'}>${aiOkLabel(aiChosen().length)}</button>`:''}<button class="btn ghost" data-act="tadd">Add with more detail</button></div>
   ${Object.keys(byTag).length?`<p class="muted small">Tagged this month: ${Object.entries(byTag).map(([k,v])=>`${esc(k)} ${f2(v)}`).join(' · ')}</p>`:''}
@@ -1587,8 +1669,8 @@ const kfmt=v=>v>=1000?'$'+(v/1000).toFixed(v%1000?1:0)+'k':'$'+Math.round(v);
 function roundTop(x,y,w,h,r){r=Math.min(r,h,w/2);return`M${x},${y+h}V${y+r}Q${x},${y} ${x+r},${y}H${x+w-r}Q${x+w},${y} ${x+w},${y+r}V${y+h}Z`}
 function vTrends(){
   const end=view.y*12+view.m,ms=[];for(let i=end-5;i<=end;i++)ms.push(`${Math.floor(i/12)}-${pad(i%12+1)}`);
-  const data=ms.map(m=>{const by={},tags={};let n=0;(tx[m]?.items||[]).forEach(t=>{if(NOSPEND.includes(t.cat))return;by[t.cat]=(by[t.cat]||0)-t.amt;if(t.tag)tags[t.tag]=(tags[t.tag]||0)-t.amt;n++});return{m,by,tags,n,total:Object.values(by).reduce((s,v)=>s+v,0)}});
-  const tot={};data.forEach(d=>Object.entries(d.by).forEach(([k,v])=>tot[k]=(tot[k]||0)+v));
+  const data=ms.map(m=>{const by=Object.create(null),tags=Object.create(null);let n=0;(tx[m]?.items||[]).forEach(t=>{if(NOSPEND.includes(t.cat))return;by[t.cat]=(by[t.cat]||0)-t.amt;if(t.tag)tags[t.tag]=(tags[t.tag]||0)-t.amt;n++});return{m,by,tags,n,total:Object.values(by).reduce((s,v)=>s+v,0)}});
+  const tot=Object.create(null);data.forEach(d=>Object.entries(d.by).forEach(([k,v])=>tot[k]=(tot[k]||0)+v));
   const ranked=Object.keys(tot).sort((a,b)=>tot[b]-tot[a]),top=ranked.slice(0,ranked.length>5?4:5),hasOther=ranked.length>top.length;
   const series=[...top,...(hasOther?['Other']:[])],col=(s,i)=>s==='Other'?'var(--s0)':`var(--s${i+1})`;
   const val=(d,s)=>s==='Other'?Object.entries(d.by).filter(([k])=>!top.includes(k)).reduce((a,[,v])=>a+v,0):(d.by[s]||0);
@@ -1631,7 +1713,7 @@ function spendingFacts(){
   const end=view.y*12+view.m,ms=[];for(let i=end-5;i<=end;i++)ms.push(`${Math.floor(i/12)}-${pad(i%12+1)}`);
   const lab=m=>`${MONL[+m.slice(5)-1]} ${m.slice(0,4)}`,cur=ms[5],out=[];
   const spent=m=>(tx[m]?.items||[]).filter(t=>!NOSPEND.includes(t.cat));
-  const byCat=m=>{const b={};spent(m).forEach(t=>b[t.cat]=(b[t.cat]||0)-t.amt);return b};
+  const byCat=m=>{const b=Object.create(null);spent(m).forEach(t=>b[t.cat]=(b[t.cat]||0)-t.amt);return b};
   out.push(`Today is ${wdl(TODAY)}, ${TODAY.slice(0,4)}. "This month" means ${lab(cur)}. All amounts are US dollars.`);
   if(!(KICK()&&end<mi(KICK()))){
     const {list}=project(),inc=sum(list.filter(e=>e.t==='in'&&(!e.passive||plan.interestIn))),bo=sum(list.filter(isBudgetOut)),gl=plan.goals.reduce((x,g)=>x+goalNeed(g),0),L=logged(cur);
@@ -1643,20 +1725,20 @@ function spendingFacts(){
   const prev=ms.slice(2,5).filter(m=>spent(m).length),now_=byCat(cur),cats=new Set([...Object.keys(now_),...prev.flatMap(m=>Object.keys(byCat(m)))]);
   if(prev.length){out.push(`\nTHIS MONTH VS THE ${prev.length}-MONTH AVERAGE BEFORE IT`);
     [...cats].forEach(c=>{const a=prev.reduce((x,m)=>x+(byCat(m)[c]||0),0)/prev.length,v=now_[c]||0;out.push(`${c}: ${f2(v)} this month, average ${f2(a)}, difference ${v-a>=0?'+':'−'}${f2(Math.abs(v-a))}`)})}
-  const L=logged(cur),bills={};project().list.filter(isBudgetOut).forEach(e=>bills[e.cat||'Other']=(bills[e.cat||'Other']||0)+e.amt);
+  const L=logged(cur),bills=Object.create(null);project().list.filter(isBudgetOut).forEach(e=>bills[e.cat||'Other']=(bills[e.cat||'Other']||0)+e.amt);
   const bud=plan.cats.filter(c=>+c.budget>0);
   if(bud.length){out.push(`\nBUDGETS THIS MONTH`);bud.forEach(c=>{const u=(L.by[c.name]||0)+(bills[c.name]||0);out.push(`${c.name}: budget ${f2(+c.budget)}, used ${f2(u)} (bills ${f2(bills[c.name]||0)}, logged ${f2(L.by[c.name]||0)}), ${u>c.budget?'over by '+f2(u-c.budget):f2(c.budget-u)+' left'}`)})}
-  const merch=m=>{const o={};spent(m).filter(t=>t.amt<0).forEach(t=>{const k=t.desc.trim();(o[k]=o[k]||{n:0,t:0}).n++;o[k].t-=t.amt});return o};
+  const merch=m=>{const o=Object.create(null);spent(m).filter(t=>t.amt<0).forEach(t=>{const k=t.desc.trim();(o[k]=o[k]||{n:0,t:0}).n++;o[k].t-=t.amt});return o};
   const top=Object.entries(merch(cur)).sort((x,y)=>y[1].t-x[1].t).slice(0,10);
   if(top.length){out.push(`\nTOP MERCHANTS THIS MONTH`);top.forEach(([k,v])=>out.push(`${k}: ${f2(v.t)} over ${v.n} purchase${v.n>1?'s':''}`))}
   /* the same merchant is spelled differently across statements (store numbers, cities), so match on its first words */
   const mkey=k=>k.toLowerCase().replace(/[^a-z& ]+/g,' ').split(/\s+/).filter(w=>w.length>1).slice(0,2).join(' ')||k.toLowerCase();
-  const seen={};ms.forEach(m=>{const here={};Object.entries(merch(m)).forEach(([k,v])=>{const x=mkey(k);(here[x]=here[x]||{name:k,t:0,n:0}).t+=v.t;here[x].n+=v.n});
+  const seen=Object.create(null);ms.forEach(m=>{const here=Object.create(null);Object.entries(merch(m)).forEach(([k,v])=>{const x=mkey(k);(here[x]=here[x]||{name:k,t:0,n:0}).t+=v.t;here[x].n+=v.n});
     Object.entries(here).forEach(([x,v])=>{(seen[x]=seen[x]||{name:v.name,months:0,amts:[]}).months++;seen[x].amts.push(v.t/v.n)})});
   const rec=Object.values(seen).filter(x=>x.months>=3).sort((x,y)=>y.months-x.months);
   if(rec.length){out.push(`\nMERCHANTS CHARGED IN 3 OR MORE OF THE LAST 6 MONTHS (possible subscriptions or habits)`);rec.slice(0,15).forEach(x=>{const a=[...x.amts].sort((p,q)=>p-q)[x.amts.length>>1];out.push(`${x.name}: ${x.months} months, typically ${f2(a)}`)})}
   if(plan.bills.length){out.push(`\nSCHEDULED BILLS`);plan.bills.filter(b=>!b.planned).forEach(b=>out.push(`${b.name}: ${b.variable?'about ':''}${f2(+b.amt||0)}, ${(FREQS.find(f=>f[0]===b.freq)?.[1]||'').toLowerCase()}, about ${f2((+b.amt||0)*(PER[b.freq]||12)/12)} a month, category ${b.cat||'Other'}${isHSA(acct(b.acct))?', paid from the HSA':''}`))}
-  const tags={};ms.forEach(m=>spent(m).forEach(t=>{if(t.tag)tags[t.tag]=(tags[t.tag]||0)-t.amt}));
+  const tags=Object.create(null);ms.forEach(m=>spent(m).forEach(t=>{if(t.tag)tags[t.tag]=(tags[t.tag]||0)-t.amt}));
   if(Object.keys(tags).length)out.push(`\nTAGGED SPENDING, LAST 6 MONTHS\n`+Object.entries(tags).map(([k,v])=>`${k}: ${f2(v)}`).join('\n'));
   const items=[...spent(cur)].sort((a,b)=>a.date<b.date?1:-1).slice(0,120);
   if(items.length){out.push(`\nTHIS MONTH'S PURCHASES, NEWEST FIRST`);items.forEach(t=>out.push(`${dl(t.date)} · ${t.desc} · ${t.cat} · ${t.amt<0?f2(-t.amt):'refund '+f2(t.amt)}${t.acct?' · '+acctName(t.acct):''}${t.tag?' · tag '+t.tag:''}`))}
@@ -1732,6 +1814,7 @@ function vGoals(){
 /* ---------- render ---------- */
 const VIEWS={overview:vOverview,kickoff:vKick,spend:vSpend,income:()=>vList('income'),bills:()=>vList('bills'),accounts:vAccounts,debt:vDebt,trends:vTrends,goals:vGoals};
 function paint(){
+  refreshToday();
   $('#mlabel').textContent=`${MONL[view.m]} ${view.y}`;
   $('#mnav').hidden=['goals','debt','kickoff'].includes(tab);
   document.querySelectorAll('.tab').forEach(t=>t.setAttribute('aria-selected',t.dataset.tab===tab));
@@ -1747,6 +1830,7 @@ function paint(){
 }
 let allLoaded=false;
 async function render(){
+  refreshToday();
   if(!plan)return;
   const i=view.y*12+view.m,p=`${Math.floor((i-1)/12)}-${pad((i-1)%12+1)}`;
   await ensureTx(mk(view));await ensureTx(p);
@@ -1756,6 +1840,11 @@ async function render(){
   if(tab==='trends'){if(!allLoaded){for(const m of await allMonths())await ensureTx(m);allLoaded=true}for(let j=i-5;j<=i;j++)await ensureTx(`${Math.floor(j/12)}-${pad(j%12+1)}`)}
   paint();
 }
+
+/* Once a minute, notice that midnight has passed and redraw with the new date (not while a dialog is open). */
+setInterval(()=>{
+  if(isoDay(new Date())!==TODAY&&!$('#dlg').open)render();
+},60000);
 
 /* ---------- events ---------- */
 const shift=n=>{const i=view.y*12+view.m+n;view={y:Math.floor(i/12),m:((i%12)+12)%12};render()};
@@ -1780,7 +1869,18 @@ document.addEventListener('click',e=>{
   else if(act==='badsave')saveBad().then(()=>toast('Copy saved. Keep that file: it holds the data exactly as it was stored.'),()=>toast('The copy was not saved'));
   else if(act==='badclear')clearBad();
   else if(act==='tadd')editTx();else if(act==='tedit')editTx(id);
-  else if(act==='tdel'){const m=mk(view);tx[m].items=tx[m].items.filter(t=>t.id!==id);saveTx(m);paint()}
+  else if(act==='tdel'){
+    const m=mk(view),oldIndex=tx[m].items.findIndex(t=>t.id===id);
+    if(oldIndex<0)return;
+    const removed=tx[m].items[oldIndex];
+    tx[m].items=tx[m].items.filter(t=>t.id!==id);saveTx(m);paint();
+    /* Undo puts the same transaction back at its old place in the same month */
+    toast('Transaction deleted',{label:'Undo',ms:8000,run:()=>{
+      if(!tx[m]||tx[m].items.includes(removed))return;
+      tx[m].items.splice(Math.min(oldIndex,tx[m].items.length),0,removed);
+      saveTx(m);paint();
+    }});
+  }
   else if(act==='timport')openImport();else if(act==='trules')editRules();
   else if(act==='taisort')aiSortMonth();
   else if(act==='taistop'){if(monthSort){monthSort.stop=true;paint()}}
@@ -1850,12 +1950,25 @@ document.addEventListener('change',e=>{
     else{const n=parseFloat(v);if(isNaN(n))return;undo();plan.actual[k]=Math.abs(n);plan.done[k]=1;
       if(a){const f=a.divMode==='reinvest'?'bal':'cash',x=Math.abs(n);a[f]=r2((+a[f]||0)+x);ap[k]={f,v:x}}}
     savePlan();paint()}
-  else if(act==='cash'){const a=A();if(a){a.cash=num();a.upd=TODAY;snapNW();savePlan();paint()}}
+  else if(act==='cash'){
+    const a=A();
+    if(a){
+      /* a blanked field means "never mind", not zero: keep the old value and show it again */
+      if(b.value.trim()===''){paint()}
+      else{a.cash=num();a.upd=TODAY;snapNW();savePlan();paint()}
+    }
+  }
   else if(act==='apy'){const a=A();if(a){a.apy=Math.max(0,num());savePlan();paint()}}
   else if(act==='typ'){const a=A();if(a){a.typ=Math.max(0,num());savePlan();paint()}}
   else if(act==='payon'){setPay(b.dataset.key,b.value);paint();if(b.value)toast(`Payment moved to ${dl(b.value)}`)}
   else if(act==='stmt'){const a=A();if(a){a.stmt=Math.max(0,num());savePlan();paint()}}
-  else if(act==='bal'){const a=A();if(a){a.bal=num();a.upd=TODAY;a.updAt=Date.now();snapNW();savePlan();paint()}}
+  else if(act==='bal'){
+    const a=A();
+    if(a){
+      if(b.value.trim()===''){paint()}
+      else{a.bal=num();a.upd=TODAY;a.updAt=Date.now();snapNW();savePlan();paint()}
+    }
+  }
   else if(act==='tcat'){const m=mk(view),t=tx[m].items.find(x=>x.id===id);if(t){const wasAi=t.ai;t.cat=b.value;delete t.ai;const n=follow(t,m);saveTx(m);learn(t);if(n||wasAi)paint();else $('#txs').textContent=txSum();if(n)toast(`Also set ${n} other charge${n>1?'s':''} from this merchant`)}}
 });
 
