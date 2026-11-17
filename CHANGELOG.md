@@ -1,6 +1,35 @@
 # Changelog
 
-Changes in this fork (Budgeter-categorizer) since the original Budgeter 2.0.0. Every change is in `app/index.html`. After updating it, run `bash install.sh` again, because the installed Mac app is a copy made when it's built.
+Changes in this fork (Budgeter-categorizer) since the original Budgeter 2.0.0. Changes are in `app/index.html` unless an entry says otherwise. After updating it, run `bash install.sh` again, because the installed Mac app is a copy made when it's built.
+
+## 2.4.0 — 2026-11-17
+
+### Added
+- Backups include `appVersion` and a `check` block: for each month, how many transactions it holds and their total in cents. The file is still `version: 2`, so older copies of Budgeter can read it.
+- Restoring a backup first downloads `budgeter-before-restore-<date>.json`, a copy of what was there before. If that copy can't be saved, nothing is restored.
+- **Undo** for 8 seconds after deleting a transaction with ×.
+
+### Changed
+- Restore checks every value in the file before anything changes: ids, dates (they must exist on the calendar), numbers, schedules and account types. One problem refuses the whole file and lists what's wrong. A 2.4.0 backup whose spending doesn't match its own `check` block is refused.
+- Import reads amounts strictly. "12,50", "1.234,56" and "1e3" are skipped instead of being read as 1250, 1.23 and 13. Dates that don't exist, such as February 30th, are skipped.
+- New bills, accounts, goals and transactions get UUIDs (36 characters). Existing short ids keep working.
+- Size limits: 50 MB for backups, 20 MB for CSV files, 50 MB for PDFs.
+- 2027 HSA limits: $4,500 self-only, $9,000 family.
+- Desktop app (`main.js`): only https links open in your browser. Other links are ignored.
+
+### Fixed
+- Saved data that can't be read (damaged or cut off) no longer loads as a blank plan that the next change saves over. A note at the top explains, saving stops, and you can save a copy of the damaged data, then remove it.
+- Clearing a balance box no longer saves a balance of 0 and a net worth snapshot. The old value comes back.
+- "Today" moves on after midnight when the app is left open.
+- A merchant, category or tag named "constructor", "toString" or "__proto__" is counted and remembered correctly.
+- Values from a backup file are escaped everywhere they're shown.
+
+### Data
+- New ids are UUIDs, and backups gain `appVersion` and `check`. Older versions ignore both and can restore a 2.4.0 backup, but they don't verify the `check` block.
+
+### Known limits
+- Not yet run against a real model, with `npm start` on Windows, or on the Mac. See `tests/manual-checklist-2.4.0.md`.
+- Two deletes in quick succession stack their Undo messages: the newer one covers the older until it goes.
 
 ## 2.3.0 — 2026-11-12
 
