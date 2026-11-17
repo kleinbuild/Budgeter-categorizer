@@ -26,7 +26,7 @@ For this fork:
 In Terminal:
 ```
 git clone https://github.com/kleinbuild/Budgeter-categorizer.git
-cd Budgeter
+cd Budgeter-categorizer
 bash install.sh
 ```
 
