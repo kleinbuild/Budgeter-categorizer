@@ -274,9 +274,12 @@ const KICK=()=>plan.kickoff||'';
 const START=()=>KICK()>TODAY?KICK():TODAY;
 
 /* ---------- storage: a copy on this device and a copy in your account ---------- */
-/* S.bad holds saved data that is there but can't be read, by storage key: {raw, why}. While it has anything in it,
-   or S.locked is set, nothing is saved, so the unreadable data is never overwritten. */
-const S={db:null,uid:null,locked:false,bad:{}};
+/* S.bad holds saved data that is there but can't be read, by storage key: {raw, why, where}.
+   "where" is 'device' (the copy on this device) or 'account' (the copy in your claude.ai account).
+   While S.bad has anything in it, or S.locked is set, nothing is saved, so the unreadable data is never overwritten.
+   S.skipAccount lists keys whose account copy was set aside in this browser tab, so it is treated as missing. */
+const S={db:null,uid:null,locked:false,bad:{},skipAccount:{}};
+try{S.skipAccount=JSON.parse(sessionStorage.getItem('budgeter:skipAccount')||'{}')||{}}catch(e){}
 const isObj=v=>!!v&&typeof v==='object'&&!Array.isArray(v);
 /* Reading from this device has three outcomes that must not be mixed up:
    missing (nothing saved yet), ok, or bad (something is saved but it isn't valid JSON).
@@ -297,7 +300,8 @@ function shapeProblem(k,o){
   if(!isObj(o))return k==='plan'?'it is not a plan':'it is not a month of spending';
   if(k!=='plan')return Array.isArray(o.items)&&o.items.every(isObj)?'':'its "items" is not a list of transactions';
   for(const f of ['income','bills','accounts','goals','cats'])if(o[f]!==undefined&&!(Array.isArray(o[f])&&o[f].every(isObj)))return`its "${f}" is not a list`;
-  for(const f of ['done','actual','applied','payOn','nw','merch'])if(o[f]!==undefined&&!isObj(o[f]))return`its "${f}" is not a set of values`;
+  /* null is allowed here: upgrade() turns it into an empty set of values */
+  for(const f of ['done','actual','applied','payOn','nw','merch'])if(o[f]!=null&&!isObj(o[f]))return`its "${f}" is not a set of values`;
   if(o.rules!==undefined&&typeof o.rules!=='string')return'its "rules" is not text';
   return'';
 }
@@ -310,9 +314,20 @@ async function sRead(k){
   const r=lread(k);
   if(r.state==='ok'){const why=shapeProblem(k,r.value);if(why){r.state='bad';r.why=why}}
   /* unreadable: remember the raw text, and throw so the caller locks saving instead of starting blank */
-  if(r.state==='bad'){S.bad[k]={raw:r.raw,why:r.why};throw{code:'unreadable'}}
+  if(r.state==='bad'){S.bad[k]={raw:r.raw,why:r.why,where:'device'};throw{code:'unreadable'}}
   const l=r.state==='ok'?r.value:null;let c=null;
-  if(S.db){const s=await S.db.doc(cpath(k)).get();c=s.exists?clone(s.data()):null;if(c&&shapeProblem(k,c))throw{code:'unreadable_account'}}
+  if(S.db&&!S.skipAccount[k]){
+    const s=await S.db.doc(cpath(k)).get();c=s.exists?clone(s.data()):null;
+    const why=c==null?'':shapeProblem(k,c);
+    if(why){
+      /* The account copy can't be read. If this device has a good copy, the account copy is kept on this device
+         under a separate name and the device copy is used (the next save writes it to the account).
+         With no good copy here, stop and say so, the same as for damaged data on this device. */
+      const raw=JSON.stringify(c);
+      if(l&&setAside(k,raw,'account',Date.now())){c=null;toast(`The copy of ${k==='plan'?'your plan':'spending for '+k.slice(3)} in your account couldn’t be read. It was kept on this device, and this device’s copy is used instead.`)}
+      else{S.bad[k]={raw,why,where:'account'};throw{code:'unreadable'}}
+    }
+  }
   if(l&&(!c||(l._ts||0)>(c._ts||0))){if(S.db){pend[k]=l;timers[k]=setTimeout(()=>flushKey(k),400)}return l}
   return c;
 }
@@ -324,12 +339,20 @@ function flushKey(k){
 }
 const flushAll=()=>Object.keys(pend).forEach(flushKey);
 const saveBlocked=()=>S.locked||Object.keys(S.bad).length>0;
+/* Saves one key. Returns false when nothing could be saved (saving is stopped, or this device's storage is full
+   and there's no account to save to), so callers that must know, like restore, can say so. */
 function persist(k,get){
-  if(saveBlocked()){status('Not saved: see the note above','bad');return}
+  if(saveBlocked()){status('Not saved: see the note above','bad');return false}
   const o=clone(get());o._ts=Date.now();
   const ok=lset(k,o);
-  if(!S.db){status(ok?okMsg():'Could not save',ok?'':'bad');return}
+  if(!S.db){status(ok?okMsg():'Could not save',ok?'':'bad');return ok}
   pend[k]=o;status('Saving…');clearTimeout(timers[k]);timers[k]=setTimeout(()=>flushKey(k),500);
+  return true;
+}
+/* Moves unreadable data out of the way without deleting it: it is kept on this device as
+   budgeter:unreadable:<where>:<key>:<time>, which nothing else in the app reads. Returns false if it couldn't be kept. */
+function setAside(k,raw,where,stamp){
+  try{localStorage.setItem(`budgeter:unreadable:${where}:${k}:${stamp}`,raw);return true}catch(e){return false}
 }
 const savePlan=()=>persist('plan',()=>plan);
 const saveTx=m=>persist('tx-'+m,()=>tx[m]);
@@ -339,21 +362,33 @@ async function allMonths(){
   if(S.db){try{(await S.db.collection('data/users/'+S.uid).get()).docs.forEach(d=>{if(d.id.startsWith('tx-'))set.add(d.id.slice(3))})}catch(e){}}
   return[...set].filter(m=>/^\d{4}-\d{2}$/.test(m)).sort();
 }
+/* Saves a file for the person. Returns true when the save is confirmed (claude.ai's downloads capability), and false
+   when the browser or desktop app was only asked to download it: a plain download can't tell whether the file was
+   written, or whether a save dialog was cancelled. */
 async function saveFile(filename,data,type){
   let dm=null;try{dm=window.claude?await claude.use('downloads'):null}catch(e){}
-  if(dm)await dm.save({filename,data});
-  else{const a=document.createElement('a');a.href=URL.createObjectURL(new Blob([data],{type}));a.download=filename;document.body.appendChild(a);a.click();a.remove()}
+  if(dm){await dm.save({filename,data});return true}
+  const a=document.createElement('a');a.href=URL.createObjectURL(new Blob([data],{type}));a.download=filename;document.body.appendChild(a);a.click();a.remove();
+  return false;
 }
-/* older saves: Monthly planner kept data under planner: on this device and scheduled loans on the account */
+/* Older saves: Monthly planner (v1) kept data under planner: on this device, and scheduled loans on the account.
+   They are copied to budgeter: once, and only into keys that are still empty, so old data can never replace newer data.
+   budgeter:moved-v1 records that this has been dealt with, so it doesn't run again after something is set aside. */
 function moveOldKeys(){
   try{
-    if(localStorage.getItem('budgeter:plan')||!localStorage.getItem('planner:plan'))return;
-    const ks=[];for(let i=0;i<localStorage.length;i++){const k=localStorage.key(i);if(k.startsWith('planner:'))ks.push(k)}
-    ks.forEach(k=>localStorage.setItem('budgeter:'+k.slice(8),localStorage.getItem(k)));
+    if(localStorage.getItem('budgeter:moved-v1'))return;
+    const hasNew=localStorage.getItem('budgeter:plan')!=null,hasOld=localStorage.getItem('planner:plan')!=null;
+    if(!hasNew&&hasOld){
+      const ks=[];for(let i=0;i<localStorage.length;i++){const k=localStorage.key(i);if(k.startsWith('planner:'))ks.push(k)}
+      ks.forEach(k=>{const target='budgeter:'+k.slice(8);if(localStorage.getItem(target)==null)localStorage.setItem(target,localStorage.getItem(k))});
+    }
+    if(hasNew||hasOld)localStorage.setItem('budgeter:moved-v1','1');
   }catch(e){}
 }
 function upgrade(p){
   let ch=false;
+  /* a set of values saved as null (or missing) becomes an empty one: the screens read these without checking */
+  ['done','actual','applied','payOn','nw','merch'].forEach(f=>{if(!isObj(p[f])){p[f]={};ch=true}});
   p.accounts.forEach(a=>{
     if(a.type==='credit'&&!+a.dueDay){const d=+a.due||(a.duedate?+a.duedate.slice(8,10):0);if(d){a.dueDay=d;ch=true}}
     if(a.type==='loan'&&a.pdate){
@@ -395,8 +430,17 @@ async function buildBackupText(){
   const data=JSON.stringify({app:'budgeter',version:2,appVersion:APP_VERSION,exported:new Date().toISOString(),plan,tx:t,check},null,1);
   return{text:data,monthCount:months.length};
 }
+/* While some saved data can't be read, what's on screen is incomplete, so a backup would look normal but hold a blank
+   plan or month. Backup is off until the unreadable data is dealt with. */
+function backupBlockedMessage(){
+  if(!saveBlocked())return'';
+  return Object.keys(S.bad).length?'Backup is off while some saved data can’t be read. Use “Save a copy of the unreadable data” in the note at the top.':'Backup is off because your data didn’t load. Reload the page first.';
+}
 async function backup(){
+  if(backupBlockedMessage()){toast(backupBlockedMessage());return}
   const {text,monthCount}=await buildBackupText();
+  /* reading every month can find a damaged one that hadn't been opened yet */
+  if(backupBlockedMessage()){showBad();toast(backupBlockedMessage());return}
   try{await saveFile(`budgeter-backup-${TODAY}.json`,text,'application/json');toast(`Backup ready: plan and ${monthCount} months of spending`)}catch(e){toast('Backup was not saved')}
 }
 
@@ -410,7 +454,8 @@ const ID_RE=/^[A-Za-z0-9_-]{1,64}$/;
 const MONTH_RE=/^\d{4}-(0[1-9]|1[0-2])$/;
 /* keys of the per-occurrence maps (done, actual, applied, payOn): kind, item id, date */
 const OCC_KEY_RE=/^(in|out|save):[A-Za-z0-9_-]{1,70}:\d{4}-(0[1-9]|1[0-2])-(0[1-9]|[12]\d|3[01])$/;
-/* a YYYY-MM-DD date that exists on the calendar (no November 31st) */
+/* a YYYY-MM-DD date that exists on the calendar (no November 31st). Any year: a date box accepts typos like 0202,
+   and a backup this app wrote must restore. */
 function isIsoDate(v){
   if(typeof v!=='string'||!/^\d{4}-(0[1-9]|1[0-2])-(0[1-9]|[12]\d|3[01])$/.test(v))return false;
   const [y,m,d]=v.split('-').map(Number);
@@ -425,7 +470,11 @@ const DATE_FIELDS=new Set(['date','end','divDate','cdate','upd','duedate','ytdOn
 const ID_FIELDS=new Set(['acct','to','payfrom','cfrom','lfrom']);
 const NUM_FIELDS=new Set(['amt','day2','dom','issue','bal','cash','divAmt','contrib','match','cday2','ret','ytd','apy','intday','limit','dueDay','due','stmt','typ','apr','min','lead','target','saved','budget','updAt','at']);
 const FREQ_FIELDS=new Set(['freq','cfreq','divFreq']);
-const MAX_TEXT=5000,MAX_PROBLEMS=5;
+/* Transaction dates from versions before 2.4.0 weren't checked on import, so a backup can hold ones like 2026-02-30
+   or 123-01-02. Those still restore: they only need the YYYY-MM-DD shape. */
+const isTxDate=v=>typeof v==='string'&&/^\d{3,4}-\d\d-\d\d$/.test(v);
+/* No length limit on text: the forms have none, and a backup this app wrote must restore. The 50 MB file limit caps it. */
+const MAX_PROBLEMS=5;
 function fieldProblem(key,v){
   if(key==='__proto__')return'is not an allowed name';
   if(key==='id')return typeof v==='string'&&ID_RE.test(v)?'':'is not a valid id';
@@ -434,22 +483,22 @@ function fieldProblem(key,v){
   if(NUM_FIELDS.has(key))return isNumOrEmpty(v)?'':'is not a number';
   if(FREQ_FIELDS.has(key))return isEmpty(v)||FREQS.some(f=>f[0]===v)?'':'is not a schedule this app knows';
   if(v==null||typeof v==='boolean'||isFiniteNum(v))return'';
-  if(typeof v==='string')return v.length<=MAX_TEXT?'':'is too long';
+  if(typeof v==='string')return'';
   return'must be text, a number or yes/no';
 }
 function checkBackup(b){
   const problems=[];
   const bad=msg=>{if(problems.length<MAX_PROBLEMS)problems.push(msg)};
   /* every field of one record, by the rules above */
-  const fields=(rec,where)=>Object.keys(rec).forEach(key=>{const p=fieldProblem(key,rec[key]);if(p)bad(`${where}: "${key}" ${p}`)});
+  const fields=(rec,where,skip)=>Object.keys(rec).forEach(key=>{if(skip&&skip.includes(key))return;const p=fieldProblem(key,rec[key]);if(p)bad(`${where}: "${key}" ${p}`)});
   /* a list of records that each need an id of their own (and a name, for everything but transactions) */
-  const records=(list,where,needsName)=>{
+  const records=(list,where,needsName,skip)=>{
     if(!Array.isArray(list)){bad(`${where} is not a list`);return[]}
     const seen=new Set();
     list.forEach((rec,i)=>{
       const at=`${where} ${i+1}`;
       if(!isObj(rec)){bad(`${at} is not a record`);return}
-      fields(rec,at);
+      fields(rec,at,skip);
       if(typeof rec.id!=='string')bad(`${at} has no id`);
       else if(seen.has(rec.id))bad(`${at} repeats the id of another one`);
       else seen.add(rec.id);
@@ -463,7 +512,7 @@ function checkBackup(b){
     if(!isObj(o)){bad(`${where} is not a set of values`);return}
     Object.keys(o).forEach(k=>{if(k==='__proto__'||!keyOk(k))bad(`${where}: "${k.slice(0,40)}" is not a valid name`);else if(!valueOk(o[k]))bad(`${where}: the value for "${k.slice(0,40)}" is not valid`)});
   };
-  const shortText=v=>typeof v==='string'&&v.length<=MAX_TEXT;
+  const shortText=v=>typeof v==='string';
 
   if(!isObj(b)||(b.app!=='budgeter'&&b.app!=='monthly-planner')||!isObj(b.plan))return['it is not a Budgeter or Monthly planner backup'];
   if(b.version!==undefined&&!(isFiniteNum(b.version)&&b.version<=2))return['it was made by a newer version of Budgeter than this one'];
@@ -483,7 +532,7 @@ function checkBackup(b){
     else p.cats.forEach((c,i)=>{
       if(!isObj(c)){bad(`category ${i+1} is not a record`);return}
       fields(c,`category ${i+1}`);
-      if(typeof c.name!=='string'||!c.name.trim()||c.name.length>200)bad(`category ${i+1} has no name`);
+      if(typeof c.name!=='string'||!c.name.trim())bad(`category ${i+1} has no name`);
     });
   }
   map(p.done,'done',k=>OCC_KEY_RE.test(k),v=>v===1||v===true);
@@ -491,8 +540,8 @@ function checkBackup(b){
   map(p.applied,'applied dividends',k=>OCC_KEY_RE.test(k),v=>isObj(v)&&(v.f==='bal'||v.f==='cash')&&isFiniteNum(v.v)&&Object.keys(v).length===2);
   map(p.payOn,'pay dates',k=>OCC_KEY_RE.test(k),isIsoDate);
   map(p.nw,'net worth history',k=>MONTH_RE.test(k),v=>isObj(v)&&isFiniteNum(v.a)&&isFiniteNum(v.d)&&(isEmpty(v.dt)||isIsoDate(v.dt))&&Object.keys(v).every(x=>['a','d','dt'].includes(x)));
-  map(p.merch,'remembered merchants',k=>k.length<=MAX_TEXT,v=>isObj(v)&&shortText(v.desc)&&shortText(v.cat)&&(isEmpty(v.tag)||shortText(v.tag))&&(isEmpty(v.acct)||(typeof v.acct==='string'&&ID_RE.test(v.acct)))&&Object.keys(v).every(x=>['desc','cat','tag','acct'].includes(x)));
-  if(p.rules!==undefined&&!(typeof p.rules==='string'&&p.rules.length<=200000))bad('the category rules are not text');
+  map(p.merch,'remembered merchants',k=>k!=='',v=>isObj(v)&&shortText(v.desc)&&shortText(v.cat)&&(isEmpty(v.tag)||shortText(v.tag))&&(isEmpty(v.acct)||(typeof v.acct==='string'&&ID_RE.test(v.acct)))&&Object.keys(v).every(x=>['desc','cat','tag','acct'].includes(x)));
+  if(p.rules!==undefined&&typeof p.rules!=='string')bad('the category rules are not text');
   if(!isEmpty(p.kickoff)&&!isIsoDate(p.kickoff))bad('the kickoff day is not a date');
   if(!isNumOrEmpty(p.extra))bad('the extra debt payment is not a number');
   /* anything else at the top of the plan (settings, and fields this version doesn't know) must be a plain value */
@@ -504,12 +553,12 @@ function checkBackup(b){
   months.forEach(m=>{
     if(!MONTH_RE.test(m)){bad(`"${m.slice(0,40)}" is not a month`);return}
     if(!isObj(b.tx[m])){bad(`spending for ${m} is not a month of transactions`);return}
-    records(b.tx[m].items,`transaction in ${m}`,false).forEach((t,i)=>{
+    records(b.tx[m].items,`transaction in ${m}`,false,['date']).forEach((t,i)=>{
       if(!isObj(t))return;
       const at=`transaction in ${m} ${i+1}`;
-      /* transactions are added up everywhere, so here the amount must be a real number and the date a real date */
+      /* transactions are added up everywhere, so here the amount must be a real number */
       if(!isFiniteNum(t.amt))bad(`${at}: "amt" is not a number`);
-      if(!isIsoDate(t.date))bad(`${at}: "date" is not a date`);
+      if(!isTxDate(t.date))bad(`${at}: "date" is not a date`);
       if(typeof t.desc!=='string')bad(`${at} has no description`);
       if(typeof t.cat!=='string')bad(`${at} has no category`);
     });
@@ -546,17 +595,30 @@ function restore(file){
     if(problems.length){tell('This backup was not restored',['Nothing was changed. The file has '+(problems.length>=MAX_PROBLEMS?'several problems, starting with':problems.length>1?'these problems':'this problem')+':',...problems]);return}
     const ms=Object.keys(b.tx||{});
     ask(`Restore your plan and ${ms.length} months of spending from this backup${b.exported?' ('+b.exported.slice(0,10)+')':''}?`,'Restore',async()=>{
-      /* Save what is here now first, so a wrong restore can be undone. If that fails, restore nothing. */
+      /* First save what is here now, so a wrong restore can be undone. */
+      const safetyName=`budgeter-before-restore-${TODAY}.json`;
+      let confirmed=false;
       try{
         const safety=await buildBackupText();
-        await saveFile(`budgeter-before-restore-${TODAY}.json`,safety.text,'application/json');
+        /* reading every month for the copy can find a damaged one that hadn't been opened yet */
+        if(saveBlocked()){showBad();toast('Restore stopped: some saved data can’t be read. See the note at the top. Nothing was changed.');return}
+        confirmed=await saveFile(safetyName,safety.text,'application/json');
       }catch(e){
         toast('Restore stopped: the safety copy of your current data could not be saved. Nothing was changed.');
         return;
       }
-      plan=Object.assign(blank(),b.plan);plan.payOn=plan.payOn||{};upgrade(plan);savePlan();
-      ms.forEach(m=>{tx[m]={items:b.tx[m].items};saveTx(m)});
-      render();toast('Backup restored');
+      const apply=()=>{
+        plan=Object.assign(blank(),b.plan);plan.payOn=plan.payOn||{};upgrade(plan);
+        /* note every save's result: a full device storage shouldn't be reported as "restored" */
+        let saved=savePlan();
+        ms.forEach(m=>{tx[m]={items:b.tx[m].items};saved=saveTx(m)&&saved});
+        render();
+        if(saved)toast('Backup restored');
+        else tell('The backup was only partly saved',['It shows on screen now, but not all of it could be saved, probably because this page’s storage is full.',`Your data from before the restore is in ${safetyName}.`]);
+      };
+      /* a plain download can't confirm the file was written (a save dialog may have been cancelled), so ask */
+      if(confirmed)apply();
+      else ask(`A copy of what’s here now was downloaded as ${safetyName}. Check that it saved, then restore.`,'Restore now',apply);
     });
   };
   r.readAsText(file);
@@ -565,7 +627,7 @@ async function ensureTx(m){
   if(tx[m])return;
   try{tx[m]=(await sRead('tx-'+m))||{items:[]}}catch(e){S.locked=true;tx[m]={items:[]};status('Load failed: reload before editing','bad');showBad()}
 }
-/* The note shown while saved data can't be read. It stays until the unreadable data is removed (a copy is saved first). */
+/* The note shown while saved data can't be read. It stays until the unreadable data is set aside. */
 function showBad(){
   const w=$('#warn'),keys=Object.keys(S.bad);
   if(!w)return;
@@ -574,25 +636,32 @@ function showBad(){
     if(S.locked)w.innerHTML='<div class="alert late" role="alert"><b>Your saved data could not be loaded</b><div>Nothing you change now will be saved, so that what is stored stays as it is. Check your connection and reload the page.</div></div>';
     return;
   }
-  const names=keys.map(k=>k==='plan'?'your plan':'spending for '+k.slice(3));
+  const names=keys.map(k=>(k==='plan'?'your plan':'spending for '+k.slice(3))+(S.bad[k].where==='account'?' (the copy in your account)':''));
   w.hidden=false;
-  w.innerHTML=`<div class="alert late" role="alert"><b>Some saved data on this device can’t be read</b>
+  w.innerHTML=`<div class="alert late" role="alert"><b>Some saved data can’t be read</b>
   <div>${esc(names.join(', '))}: ${esc(S.bad[keys[0]].why)}. Budgeter has stopped saving, so the unreadable data is not overwritten. What shows below is empty or incomplete, and changes you make now are not kept.</div>
-  <div class="row" style="margin:10px 0 0"><button class="btn sm" data-act="badsave">Save a copy of the unreadable data</button><button class="btn sm" data-act="badclear">Remove it from this device</button></div>
-  <p class="muted" style="font-size:13px;margin:8px 0 0">Removing it saves a copy to a file first, then reloads. After that, Restore from backup brings back your last backup.</p></div>`;
+  <div class="row" style="margin:10px 0 0"><button class="btn sm" data-act="badsave">Save a copy of the unreadable data</button><button class="btn sm" data-act="badclear">Set it aside</button></div>
+  <p class="muted" style="font-size:13px;margin:8px 0 0">Setting it aside deletes nothing: it stays on this device under a separate name, and the page reloads with that part empty. Then Restore from backup brings back your last backup.</p></div>`;
 }
 /* the unreadable data exactly as it was stored, so it can be repaired by hand or sent to someone who can */
 async function saveBad(){
   const keys={};Object.entries(S.bad).forEach(([k,v])=>{keys[k]=v.raw});
   await saveFile(`budgeter-unreadable-${TODAY}.json`,JSON.stringify({app:'budgeter',unreadable:true,saved:new Date().toISOString(),keys},null,1),'application/json');
 }
+/* Moves the unreadable data out of the way. Nothing is deleted: each copy is kept first (setAside), and only when
+   every one was kept is the original key emptied, so a full storage or a crash part way loses nothing. */
 function clearBad(){
-  ask('Remove the unreadable data from this device? A copy is saved to a file first.','Save a copy and remove it',async()=>{
-    try{await saveBad()}catch(e){toast('The copy could not be saved, so nothing was removed');return}
-    Object.keys(S.bad).forEach(k=>{try{localStorage.removeItem('budgeter:'+k)}catch(e){}});
-    toast('Removed. Reloading…');
-    /* give the browser a moment to finish writing the copy before the page goes away */
-    setTimeout(()=>location.reload(),1500);
+  ask('Set the unreadable data aside? Nothing is deleted: it stays on this device under a separate name. The page then reloads with that part empty, and you can restore your last backup.','Set it aside',()=>{
+    const keys=Object.keys(S.bad),stamp=Date.now();
+    if(!keys.every(k=>setAside(k,S.bad[k].raw,S.bad[k].where,stamp))){toast('There isn’t room on this device to set it aside, so nothing was changed. Use “Save a copy” instead.');return}
+    keys.forEach(k=>{
+      if(S.bad[k].where==='device'){try{localStorage.removeItem('budgeter:'+k)}catch(e){}}
+      /* an account copy can only be replaced by saving over it, so for the rest of this tab it is treated as missing */
+      else S.skipAccount[k]=true;
+    });
+    try{sessionStorage.setItem('budgeter:skipAccount',JSON.stringify(S.skipAccount))}catch(e){}
+    toast('Set aside. Reloading…');
+    setTimeout(()=>location.reload(),600);
   });
 }
 /* action is optional: {label, run, ms}. It adds a button (such as Undo) that stays for ms milliseconds. */
