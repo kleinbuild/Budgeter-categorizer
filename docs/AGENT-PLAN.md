@@ -24,7 +24,7 @@ Each is a file in `.claude/agents/`, with its model set in the file. In Claude C
 | `rust-core` | Opus | Security-critical Rust: SQLCipher and keychain, backup encryption, the single write path, migrations runner, change log, logical clock, sync server and pairing | Writes the schema, merge SQL or conflict rules |
 | `security-reviewer` | Opus | Read-only review of a diff or phase against the trust boundaries | Edits files |
 | `tauri-builder` | Sonnet | Tauri shell, config, capabilities, platform adapter, Ollama bridge commands, CI, packaging, release docs drafts | Touches keys, the write path or sync authentication |
-| `frontend-engineer` | Sonnet | Specified front-end changes: Phase 0 fixes, fonts, pdf.js in the page, the move-only module split | Writes the owner's front-end parts from Phase 3 on |
+| `frontend-engineer` | Sonnet | Specified front-end changes: Phase 0 fixes, pdf.js in the page, the move-only module split | Writes the owner's front-end parts from Phase 3 on |
 | `test-harness` | Sonnet | Test scaffolding: runner setup, golden harness, fake Ollama, migration scaffolding, multi-device simulation, one worked example each | Writes the owner's test cases |
 | `repo-clerk` | Haiku | Exact edits: apply a named patch, bump versions, changelog entries, README fixes, fixture files from a spec | Makes judgment calls |
 | `acceptance-checker` | Haiku | Runs tests and greps, compares "Done when" lists to the repo, reports pass or fail with evidence | Fixes anything |
@@ -67,7 +67,7 @@ The owner may choose to write the skipped-rows count themselves, with `mentor`.
 |---|---|---|
 | Rust shell, `tauri.conf.json`, capabilities, `platform.js`, CI build on three systems | `tauri-builder` | Sonnet |
 | Spike: SQLCipher and the keychain library compile on all three | `rust-core` | Opus |
-| Bundle the fonts | `frontend-engineer` | Sonnet |
+| ~~Bundle the fonts~~ Not needed: 2.4.0 uses system fonts | — | — |
 | Move the inline script and styles into files; smoke checklist | Owner, with `mentor` | Opus |
 | Review capabilities and CSP | `security-reviewer` | Opus |
 | Check "Done when" | `acceptance-checker` | Haiku |

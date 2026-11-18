@@ -13,7 +13,7 @@ Run this before calling 2.4.0 done, and again on each machine (Windows, Mac). Ea
 ## 1. Backups
 
 - [ ] **A 2.3 backup restores.** Restore from backup → `good-2.3.json` → Restore. You see "Backup restored", and the Accounts tab lists Checking, High-yield savings, Visa, Car loan, HSA and Brokerage.
-- [ ] **A safety copy is saved first.** Restoring also downloads `budgeter-before-restore-<today>.json` before anything changes.
+- [ ] **A safety copy is saved first.** Restoring downloads `budgeter-before-restore-<today>.json`, then asks you to check it saved. Only after **Restore now** does anything change.
 - [ ] **It exports again identically.** Download backup. Open the new file next to `good-2.3.json`: `plan` and `tx` hold the same values (key order and the `_ts` number may differ).
 - [ ] **The export has the new fields.** The file has `"version": 2`, `"appVersion": "2.4.0"` and a `check` block: `2026-10` has count 5 and cents -26653; `2026-11` has count 6 and cents -6023.
 - [ ] **A 2.4.0 backup restores.** Restore the file you just downloaded. You see "Backup restored".
@@ -31,7 +31,8 @@ To simulate damage, open the browser's developer tools (F12) → Console, and ru
 - [ ] **Nothing is saved over it.** Change something (a category budget, say). The status at the top right says "Not saved". In the console, `localStorage.getItem('budgeter:plan').length` is still 500.
 - [ ] **Restore waits.** Restore from backup shows a message asking you to deal with the unreadable data first.
 - [ ] **Save a copy** downloads `budgeter-unreadable-<today>.json`, holding the damaged text exactly as stored.
-- [ ] **Remove it** asks first, saves the copy, removes the damaged data and reloads. The note is gone, and you can restore a backup.
+- [ ] **Backup is off** while the note shows: Download backup says why instead of saving a file with a blank plan.
+- [ ] **Set it aside** asks first, then reloads. The note is gone, and you can restore a backup. In the console, `Object.keys(localStorage).filter(k=>k.includes('unreadable'))` lists the set-aside copy: nothing was deleted.
 - [ ] **A cut-off month.** Same as above with `budgeter:tx-<this month>` (for example `budgeter:tx-2026-11`). The note names that month.
 
 ## 3. Import (finding 5)
@@ -60,6 +61,7 @@ Import statement → paste each line below under a header line `Date,Description
 ## 6. Looks and layout
 
 - [ ] Every tab opens with no errors in the console (F12). The only allowed error is a missing `favicon.ico` in the browser preview.
+- [ ] **No network requests.** In developer tools → Network, reload: every request is to the page itself. The text is in your system's font (Segoe UI on Windows, San Francisco on a Mac).
 - [ ] Light and dark themes both look right (switch your system theme).
 - [ ] At phone width (640 px or less; in developer tools, toggle the device toolbar), every tab fits with no sideways scrolling.
 - [ ] In the browser preview (no `window.claude`), everything except the AI features works and saves ("Saved on this device").

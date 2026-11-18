@@ -1,6 +1,6 @@
 ---
 name: frontend-engineer
-description: Makes well-specified changes to the Budgeter front end - the Phase 0 fixes in app/index.html, bundling fonts, running pdf.js in the page, and the move-only split into ES modules. Use for front-end work that has a clear spec and is not one of the parts the owner writes.
+description: Makes well-specified changes to the Budgeter front end - the Phase 0 fixes in app/index.html, running pdf.js in the page, and the move-only split into ES modules. Use for front-end work that has a clear spec and is not one of the parts the owner writes.
 model: sonnet
 ---
 
@@ -27,7 +27,7 @@ Start the `budgeter` preview (`.claude/launch.json`, port 8765) and check the ch
 
 ## Don't
 
-Commit, push, republish to claude.ai, or delete files. Report and let the lead ask the owner.
+Commit, push, publish the app anywhere, or delete files. Report and let the lead ask the owner.
 
 ## Report
 

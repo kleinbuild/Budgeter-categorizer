@@ -47,7 +47,7 @@ Run `git apply --exclude=CHANGELOG.md budgeter-2.3.0.patch` in the repo. Then co
 - **Local AI:** Ollama at `127.0.0.1:11434`, default model `gemma3:4b`. Which models are pulled differs by machine: run `ollama list`.
 - **This machine:** the project is developed on Windows, macOS and Linux. This machine's settings are in `.env` at the repo root (not committed; keys in `.env.example`). Find tool versions by running the tools (`node -v`, `rustc --version`), not from notes.
 - **Git:** `origin` is `https://github.com/kleinbuild/Budgeter-categorizer.git`. `.gitattributes` keeps line endings consistent; don't convert them.
-- **Web copy:** `https://claude.ai/artifact/JNg9Q5Q8WCvU4tBUzzCRXM`, capabilities `db`, `downloads`, `sample`, `user`.
+- **Hosts:** browser and desktop only. claude.ai is not a host for this fork (owner, 2026-11-17); the `window.claude` code is inherited from the original project and stays dormant.
 - **Owner:** newer developer. JavaScript is strongest; Rust is new; SQL and unit testing are being learned. Wants to understand and own everything that ships.
 - **Agents:** eight role files in `.claude/agents/`: `mentor`, `rust-core`, `security-reviewer` (Opus); `tauri-builder`, `frontend-engineer`, `test-harness` (Sonnet); `repo-clerk`, `acceptance-checker` (Haiku). If you can start subagents, use them as mapped in `docs/AGENT-PLAN.md`; if not, do the steps yourself in the same order.
 
@@ -62,8 +62,7 @@ Run `git apply --exclude=CHANGELOG.md budgeter-2.3.0.patch` in the repo. Then co
 
 ## 6. Ask me first
 
-- **Commit, push or open a pull request:** I decide what goes into history.
-- **Republish to claude.ai:** it is public-facing.
+- **Push, merge into `main`, or open a pull request:** I decide what goes into shared history. Local commits after each major, verified change are wanted without asking (2026-11-17), so work is never lost.
 - **Install or upgrade software,** including Electron and pulling `gemma3:4b` (about 3.4 GB): it changes my machine.
 - **Delete files,** including the `.patch` files: not reversible.
 - **Create a repository or choose the app identifier:** the data folder depends on it.
@@ -72,9 +71,7 @@ Run `git apply --exclude=CHANGELOG.md budgeter-2.3.0.patch` in the repo. Then co
 
 ## 7. Open
 
-- Upgrade Electron in 2.4.0? Recommended yes; needs a test on the Mac.
-- Google Fonts or system fonts?
-- Republish 2.4.0 to claude.ai?
+- Decided 2026-11-17: Electron upgraded in 2.4.0 (45.2.3; Mac test still to do), system fonts, no claude.ai.
 - Does the owner write the skipped-rows count themselves?
 - New repository or a branch (recommended: new repository), and its name.
 - The app identifier.

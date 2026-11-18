@@ -6,29 +6,36 @@ Changes in this fork (Budgeter-categorizer) since the original Budgeter 2.0.0. C
 
 ### Added
 - Backups include `appVersion` and a `check` block: for each month, how many transactions it holds and their total in cents. The file is still `version: 2`, so older copies of Budgeter can read it.
-- Restoring a backup first downloads `budgeter-before-restore-<date>.json`, a copy of what was there before. If that copy can't be saved, nothing is restored.
+- Restoring a backup first downloads `budgeter-before-restore-<date>.json`, a copy of what was there before. A browser or the desktop app can't confirm that a download was written (a save dialog may have been cancelled), so you're asked to check it saved before the restore goes ahead.
 - **Undo** for 8 seconds after deleting a transaction with ×.
 
 ### Changed
-- Restore checks every value in the file before anything changes: ids, dates (they must exist on the calendar), numbers, schedules and account types. One problem refuses the whole file and lists what's wrong. A 2.4.0 backup whose spending doesn't match its own `check` block is refused.
-- Import reads amounts strictly. "12,50", "1.234,56" and "1e3" are skipped instead of being read as 1250, 1.23 and 13. Dates that don't exist, such as February 30th, are skipped.
+- Restore checks every value in the file before anything changes: ids, dates, numbers, schedules and account types. One problem refuses the whole file and lists what's wrong. A 2.4.0 backup whose spending doesn't match its own `check` block is refused. Anything older versions could have written still restores, including long notes and the impossible transaction dates the old importer let through.
+- Restore says so when only part of a backup could be saved (for example when the page's storage is full), instead of "Backup restored".
+- Import reads amounts strictly. "12,50", "1.234,56" and "1e3" are skipped instead of being read as 1250, 1.23 and 13, and so are amounts of a billion or more. Dates that don't exist (February 30th), years outside 1900–2199, and month-name dates without a year are skipped.
+- **System fonts.** The app no longer loads Google Fonts, so it makes no network requests at all; only the desktop app talks to Ollama on your own computer.
+- **Electron 45.2.3** (was 33.2.1, which no longer gets security fixes) and electron-builder 26.18.1. The Mac app now needs macOS 13 (Ventura) or newer.
 - New bills, accounts, goals and transactions get UUIDs (36 characters). Existing short ids keep working.
 - Size limits: 50 MB for backups, 20 MB for CSV files, 50 MB for PDFs.
 - 2027 HSA limits: $4,500 self-only, $9,000 family.
 - Desktop app (`main.js`): only https links open in your browser. Other links are ignored.
 
 ### Fixed
-- Saved data that can't be read (damaged or cut off) no longer loads as a blank plan that the next change saves over. A note at the top explains, saving stops, and you can save a copy of the damaged data, then remove it.
+- Saved data that can't be read (damaged or cut off) no longer loads as a blank plan that the next change saves over. A note at the top explains, saving stops, and Backup is off (it would hold a blank plan). You can save a copy of the damaged data, and **Set it aside**: nothing is deleted, it's kept on the device under its own name, and the app starts that part empty so you can restore a backup.
+- Old Monthly planner (v1) data on the same computer is copied over only once, and never over newer data.
 - Clearing a balance box no longer saves a balance of 0 and a net worth snapshot. The old value comes back.
 - "Today" moves on after midnight when the app is left open.
 - A merchant, category or tag named "constructor", "toString" or "__proto__" is counted and remembered correctly.
 - Values from a backup file are escaped everywhere they're shown.
+- A crafted backup with extreme years can no longer freeze the app at every start.
+- A broken amount saved by an older version no longer stops every later import.
 
 ### Data
 - New ids are UUIDs, and backups gain `appVersion` and `check`. Older versions ignore both and can restore a 2.4.0 backup, but they don't verify the `check` block.
+- New localStorage keys: `budgeter:moved-v1` (the v1 copy has been dealt with) and `budgeter:unreadable:<where>:<key>:<time>` (data that was set aside).
 
 ### Known limits
-- Not yet run against a real model, with `npm start` on Windows, or on the Mac. See `tests/manual-checklist-2.4.0.md`.
+- Started with Electron 45 on Windows, but not yet run against a real model or on the Mac. See `tests/manual-checklist-2.4.0.md`.
 - Two deletes in quick succession stack their Undo messages: the newer one covers the older until it goes.
 
 ## 2.3.0 — 2026-11-12

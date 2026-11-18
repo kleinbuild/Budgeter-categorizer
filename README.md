@@ -19,7 +19,7 @@ Download this repo (**Code → Download ZIP**), unzip it, and open `app/index.ht
 Your data is saved in that browser on that computer. Use the same browser each time, and don't clear its site data. The AI features aren't available in the browser version.
 
 ### 2. Mac app
-Built and tested on Apple Silicon Macs; Intel Macs should work too. 
+Built and tested on Apple Silicon Macs; Intel Macs should work too. Needs macOS 13 (Ventura) or newer.
 
 For this fork:
 
@@ -58,7 +58,7 @@ A Mac with 16 GB of memory runs it comfortably; with 8 GB it's slower. A one-pag
 ## Your data
 - **Back up regularly:** **Download backup** at the bottom of the page saves everything to a file. **Restore from backup** loads it, including into the other version (browser ↔ Mac app).
 - The Mac app keeps its data in `~/Library/Application Support/Budgeter`.
-- Nothing is sent anywhere. The only network requests are for fonts (it falls back to system fonts offline) and, if you set it up, to Ollama on your own Mac.
+- Nothing is sent anywhere. The app uses your system's fonts and loads nothing from the internet. The only network requests go to Ollama on your own computer, if you set it up.
 
 ## Other systems
 The installer is Mac-only. On Windows or Linux, use the browser version. If you're comfortable with Node.js, `npm install` and `npm start` should also run the desktop app there, but that isn't tested.

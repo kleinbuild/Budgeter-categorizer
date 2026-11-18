@@ -33,7 +33,7 @@ These are fixed unless a serious problem turns up.
 - **Baseline is 2.3.0.** `app/index.html` is currently at 2.1.0. The 2.2.0 and 2.3.0 patches are committed as `.patch` files in the repo root but were never applied. `budgeter-2.3.0.patch` is cumulative: it gives the same `app/index.html` as the 2.2.0 patch does, and fails if 2.2.0 is applied first. Neither version has been tested against a real model. `CHANGELOG.md` describes 2.3.0 and `package.json` says 2.0.0.
 - **No existing data needs migrating.** Statements can be re-imported.
 - **A 2.4.0 stopgap comes first** (Phase 0): the single-file app with the cheap review fixes and an export the new app can read. It is the working app while the new one is built, so the new app needs a tested importer for its backups.
-- **The new app is a fork.** The old single-file app (browser, Mac app, claude.ai page) keeps working as it is and is not compatible with the new project.
+- **The new app is a fork.** The old single-file app (browser and Mac app) keeps working as it is and is not compatible with the new project.
 - **Devices:** Windows PC, Mac, Linux, family machines. iPhone access is a wish-list item, by viewing over Tailscale rather than an App Store app.
 - **Threat model:** a stolen or lost device. Backups are a file encrypted with a passphrase the owner chooses.
 - **Local AI sorting is a core feature** and returns right after the port, before storage work.
@@ -188,17 +188,17 @@ Each phase ends with a working app.
   - Through which places can outside data enter the app?
   - Why does the backup stay at version 2?
 - **Owner writes (optional):** the skipped-rows count. Hint: compare the row count before and after the filter in `recompute`.
-- **Decisions:**
-  - Upgrade Electron now? Recommended, since the stopgap will be used for months; it needs a test on the Mac.
-  - Google Fonts or system fonts?
-  - Republish 2.4.0 to claude.ai?
+- **Decisions (made 2026-11-17):**
+  - Electron upgraded in 2.4.0, to 45.2.3. Tested on Windows; the Mac still needs a test, and needs macOS 13 or newer.
+  - System fonts, so nothing is sent to Google. Phase 1 has no fonts to bundle.
+  - claude.ai is not a host for this fork, so there is nothing to republish. The `window.claude` code paths are inherited from the original project and stay dormant.
 
 ### Phase 1: Tauri shell
 
 - **Goal:** the 2.4.0 front end in a Tauri 2 window on Windows, macOS and Linux. Storage is unchanged, with test data only.
 - **Work:**
   - Move the inline script and styles into files so a strict CSP is possible.
-  - Bundle the fonts.
+  - Fonts: nothing to bundle; 2.4.0 already uses system fonts.
   - Add a `platform.js` adapter for saving files through a native dialog.
   - Set up GitHub Actions to build on all three systems.
   - Run a spike proving SQLCipher and the keychain library compile on all three.
