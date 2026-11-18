@@ -351,7 +351,8 @@ function persist(k,get){
 /* Moves unreadable data out of the way without deleting it: it is kept on this device as
    budgeter:unreadable:<where>:<key>:<time>, which nothing else in the app reads. Returns false if it couldn't be kept. */
 function setAside(k,raw,where,stamp){
-  try{localStorage.setItem(`budgeter:unreadable:${where}:${k}:${stamp}`,raw);return true}catch(e){return false}
+  const name=`budgeter:unreadable:${where}:${k}:${stamp}`;
+  try{localStorage.setItem(name,raw);return name}catch(e){return''}
 }
 const savePlan=()=>persist('plan',()=>plan);
 const saveTx=m=>persist('tx-'+m,()=>tx[m]);
@@ -507,7 +508,8 @@ function checkBackup(b){
   };
   /* a map: every key must pass keyOk and every value must pass valueOk */
   const map=(o,where,keyOk,valueOk)=>{
-    if(o===undefined)return;
+    /* null is treated like missing: upgrade() turns it into an empty set, as it does when loading */
+    if(o==null)return;
     if(!isObj(o)){bad(`${where} is not a set of values`);return}
     Object.keys(o).forEach(k=>{if(k==='__proto__'||!keyOk(k))bad(`${where}: "${k.slice(0,40)}" is not a valid name`);else if(!valueOk(o[k]))bad(`${where}: the value for "${k.slice(0,40)}" is not valid`)});
   };
@@ -651,17 +653,37 @@ async function saveBad(){
    every one was kept is the original key emptied, so a full storage or a crash part way loses nothing. */
 function clearBad(){
   ask('Set the unreadable data aside? Nothing is deleted: it stays on this device under a separate name. The page then reloads with that part empty, and you can restore your last backup.','Set it aside',()=>{
-    const keys=Object.keys(S.bad),stamp=Date.now();
-    if(!keys.every(k=>setAside(k,S.bad[k].raw,S.bad[k].where,stamp))){toast('There isn’t room on this device to set it aside, so nothing was changed. Use “Save a copy” instead.');return}
-    keys.forEach(k=>{
-      if(S.bad[k].where==='device'){try{localStorage.removeItem('budgeter:'+k)}catch(e){}}
-      /* an account copy can only be replaced by saving over it, so for the rest of this tab it is treated as missing */
-      else S.skipAccount[k]=true;
-    });
-    try{sessionStorage.setItem('budgeter:skipAccount',JSON.stringify(S.skipAccount))}catch(e){}
-    toast('Set aside. Reloading…');
-    setTimeout(()=>location.reload(),600);
+    const keys=Object.keys(S.bad),stamp=Date.now(),written=[];
+    for(const k of keys){
+      const name=setAside(k,S.bad[k].raw,S.bad[k].where,stamp);
+      if(!name){
+        /* no room for a copy on the device: undo this attempt's copies, then keep it in a downloaded file instead */
+        written.forEach(n=>{try{localStorage.removeItem(n)}catch(e){}});
+        keepByDownload();
+        return;
+      }
+      written.push(name);
+    }
+    emptyBadKeys();
   });
+}
+/* empties the unreadable keys and reloads. Only what was read as damaged is removed: if another tab has saved
+   something new over it since, that is left alone. */
+function emptyBadKeys(){
+  Object.keys(S.bad).forEach(k=>{
+    if(S.bad[k].where==='device'){try{if(localStorage.getItem('budgeter:'+k)===S.bad[k].raw)localStorage.removeItem('budgeter:'+k)}catch(e){}}
+    /* an account copy can only be replaced by saving over it, so for the rest of this tab it is treated as missing */
+    else S.skipAccount[k]=true;
+  });
+  try{sessionStorage.setItem('budgeter:skipAccount',JSON.stringify(S.skipAccount))}catch(e){}
+  toast('Set aside. Reloading…');
+  setTimeout(()=>location.reload(),600);
+}
+/* when the device is too full to keep a copy: download it, let the person check the file, then empty the keys */
+async function keepByDownload(){
+  const name=`budgeter-unreadable-${TODAY}.json`;
+  try{await saveBad()}catch(e){toast('The copy could not be saved, so nothing was changed.');return}
+  ask(`This device is too full to keep a copy, so it was downloaded as ${name} instead. Check that it saved, then remove the unreadable data.`,'Remove it now',emptyBadKeys);
 }
 /* action is optional: {label, run, ms}. It adds a button (such as Undo) that stays for ms milliseconds. */
 function toast(t,action){
@@ -854,7 +876,7 @@ const nextBill=b=>billOccs(b,addDays(TODAY,-14),addDays(TODAY,400)).find(d=>!pla
 function setDue(k,v){
   v=String(v??'').trim();
   if(v==='')delete plan.actual[k];
-  else{const n=parseFloat(v);if(isNaN(n))return false;plan.actual[k]=r2(Math.abs(n))}
+  else{const n=parseFloat(v);if(!isRealAmount(n))return false;plan.actual[k]=r2(Math.abs(n))}
   savePlan();return true;
 }
 function dueToast(k){const [,id,d]=k.split(':'),b=plan.bills.find(x=>x.id===id),v=plan.actual?.[k];if(b&&v!=null)toast(`${b.name}: ${f2(v)} due ${dl(d)}`)}
@@ -924,6 +946,8 @@ function openForm(title,fields,vals,onSave){
     for(const f of fields){
       if(f.show&&!f.show(o)){o[f.k]=f.t==='number'?0:f.t==='checkbox'?false:'';continue}
       if((typeof f.req==='function'?f.req(o):f.req)&&(f.t==='number'?isNaN(o[f.k]):!o[f.k])){$('#ferr').textContent=`${f.l} is required.`;return}
+      /* a number box accepts 3e306, which would be saved as null and make the app refuse its own backup */
+      if(f.t==='number'&&!isNaN(o[f.k])&&!isRealAmount(o[f.k])){$('#ferr').textContent=`${f.l} is too large.`;return}
       if(f.t==='number'&&isNaN(o[f.k]))o[f.k]=0;
     }
     d.close();onSave(o);
@@ -1136,6 +1160,7 @@ function wireQA(){
     e.preventDefault();
     const amt=parseFloat($('#qa-amt').value),desc=$('#qa-desc').value.trim(),date=$('#qa-date').value;
     if(!(amt>0)||!desc||!date){toast('Add a date, an amount and a merchant');return}
+    if(!isRealAmount(amt)){toast('That amount is too large');return}
     const t={id:uid(),date,desc,amt:-r2(amt),cat:$('#qa-cat').value,acct:$('#qa-acct').value,tag:$('#qa-tag').value.trim()};
     await addTx(t);learn(t);toast(`Logged ${f2(amt)} at ${desc}`);
     const keepDate=date;render();const nd=$('#qa-date');if(nd){nd.value=keepDate;$('#qa-amt').focus()}
@@ -1169,6 +1194,20 @@ const pn=text=>{
   if(!isRealAmount(value))return NaN;
   return negative?-value:value;
 };
+/* Dates written with a month name: "Mar 3, 2026", "March 3 2026", "3 Mar 2026", "03-Mar-2026", "Tue, Mar 3, 2026".
+   Read by hand rather than with new Date(text), which guesses: it turns "Feb 30" into March 2 and "Mar 3" into 2001. */
+const MONTH_NAMES=['january','february','march','april','may','june','july','august','september','october','november','december'];
+function monthNameDate(text){
+  const t=String(text).toLowerCase().trim().replace(/^(mon|tue|wed|thu|fri|sat|sun)[a-z]*\.?,?\s+/,'');
+  let m,monthWord,day,year;
+  if(m=t.match(/^([a-z]{3,9})\.?[\s-]+(\d{1,2})(?:st|nd|rd|th)?,?[\s-]+(\d{4})(?!\d)/)){[,monthWord,day,year]=m}
+  else if(m=t.match(/^(\d{1,2})(?:st|nd|rd|th)?[\s-]+([a-z]{3,9})\.?,?[\s-]+(\d{4})(?!\d)/)){[,day,monthWord,year]=m}
+  else return null;
+  /* "mar", "march" and "sept" are fine; "marx" is not */
+  const month=MONTH_NAMES.findIndex(full=>full.startsWith(monthWord)||(monthWord==='sept'&&full==='september'));
+  if(month<0)return null;
+  return realDateOrNull(`${year}-${pad(month+1)}-${pad(+day)}`);
+}
 /* only dates that exist on the calendar, in years 1900 to 2199: 2026-02-30, 13/45/2026 and 20261-01-05 are refused */
 const realDateOrNull=iso=>isIsoDate(iso)&&+iso.slice(0,4)>=1900&&+iso.slice(0,4)<=2199?iso:null;
 function pd(s){
@@ -1176,7 +1215,7 @@ function pd(s){
   if(m=s.match(/^(\d{4})-(\d{1,2})-(\d{1,2})/))return realDateOrNull(+m[2]>12?null:`${m[1]}-${pad(+m[2])}-${pad(+m[3])}`);
   if(m=s.match(/^(\d{1,2})[\/\-.](\d{1,2})[\/\-.](\d{2,4})/)){let y=+m[3];if(y<100)y+=2000;return realDateOrNull(+m[1]>12?null:`${y}-${pad(+m[1])}-${pad(+m[2])}`)}
   /* "Mar 3, 2026": needs a 4-digit year, or the browser guesses one ("Mar 3" alone becomes 2001) */
-  if(/[a-z]{3}/i.test(s)&&/(^|\D)\d{4}(\D|$)/.test(s)){const d=new Date(s);if(!isNaN(d))return realDateOrNull(`${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}`)}
+  if(/[a-z]{3}/i.test(s))return monthNameDate(s);
   return null;
 }
 function parseCSV(t){
@@ -1575,6 +1614,7 @@ function vKick(){
 }
 function kickGo(){
   const k=$('#kdate').value;if(!k){toast('Pick a kickoff day');return}
+  if([...document.querySelectorAll('[data-kb],[data-kc],[data-ks]')].some(el=>el.value.trim()!==''&&!isRealAmount(parseFloat(el.value)))){toast('One of the amounts is too large');return}
   const miss=[...document.querySelectorAll('[data-ks]')].filter(el=>parseFloat(el.value)>0&&!(+document.querySelector(`[data-kdd="${CSS.escape(el.dataset.ks)}"]`).value)).map(el=>acctName(el.dataset.ks));
   if(miss.length){toast(`Add a due day for ${miss.join(', ')}`);return}
   plan.kickoff=k;
@@ -2008,6 +2048,8 @@ document.addEventListener('keydown',e=>{
 });
 document.addEventListener('change',e=>{
   const b=e.target.closest('[data-act]');if(!b||!plan)return;const {act,id}=b.dataset;const A=()=>acct(id),num=()=>parseFloat(b.value)||0;
+  /* a number box accepts 3e306, which would be saved as null: refuse it and show the old value again */
+  if(b.type==='number'&&b.value.trim()!==''&&!isRealAmount(parseFloat(b.value))){toast('That number is too large');paint();return}
   if(act==='done'||act==='kdone'){const k=b.dataset.key;if(b.checked)plan.done[k]=1;else delete plan.done[k];savePlan();if(act==='done')paint()}
   else if(act==='kdate'){plan.kickoff=b.value;savePlan();paint()}
   else if(act==='taisel'){if(b.checked)aiSkip.delete(id);else aiSkip.add(id);aiSelSync()}

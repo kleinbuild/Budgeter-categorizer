@@ -29,6 +29,8 @@ Changes in this fork (Budgeter-categorizer) since the original Budgeter 2.0.0. C
 - Values from a backup file are escaped everywhere they're shown.
 - A crafted backup with extreme years can no longer freeze the app at every start.
 - A broken amount saved by an older version no longer stops every later import.
+- Number boxes refuse absurd values like 3e306, which used to be saved as an empty amount and make the app refuse its own backup.
+- If the device is too full to set unreadable data aside, it's downloaded instead, and removed only after you've checked the file.
 
 ### Data
 - New ids are UUIDs, and backups gain `appVersion` and `check`. Older versions ignore both and can restore a 2.4.0 backup, but they don't verify the `check` block.
@@ -37,6 +39,8 @@ Changes in this fork (Budgeter-categorizer) since the original Budgeter 2.0.0. C
 ### Known limits
 - Started with Electron 45 on Windows, but not yet run against a real model or on the Mac. See `tests/manual-checklist-2.4.0.md`.
 - Two deletes in quick succession stack their Undo messages: the newer one covers the older until it goes.
+- Data that was set aside isn't listed anywhere in the app yet; to get it back, use the browser's developer tools (Application → Local Storage, keys starting `budgeter:unreadable:`).
+- The import preview doesn't yet say how many rows it couldn't read.
 
 ## 2.3.0 — 2026-11-12
 
